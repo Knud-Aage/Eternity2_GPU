@@ -1,0 +1,28 @@
+# --- SECRETS: never commit ---
+# GoogleDriveConfig reads /credentials.json from the classpath and stores OAuth
+# tokens under tokens/. Both are per-user secrets. Anyone cloning this repo and
+# wanting Drive mirroring supplies their own; without them the solver runs fine
+# and simply skips uploading (see DriveUploader).
+src/main/resources/credentials.json
+credentials.json
+tokens/
+StoredCredential
+
+# --- build output ---
+target/
+*.class
+cp.txt
+
+# --- compiled CUDA (built locally from SolveBlackwoodKernel.cu, see build-kernel.ps1) ---
+*.ptx
+
+# --- run output ---
+logs/
+EternitySolutions*/
+*.log
+hs_err_pid*.log
+
+# --- IDE ---
+.idea/
+*.iml
+.vscode/

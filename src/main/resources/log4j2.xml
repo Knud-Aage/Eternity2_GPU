@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Console + a rolling file at logs/eternity_gpu.log.
+
+  Note vs. the upstream project's config: there the Console appender was commented out
+  while Root still referenced it, so every run began with
+  "ERROR Unable to locate appender 'Console' for logger config 'root'". Both halves are
+  enabled here, so console output works and that startup error is gone.
+-->
+<Configuration status="WARN">
+    <Appenders>
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout pattern="[%d{HH:mm:ss}] [%-5level] %msg%n"/>
+        </Console>
+
+        <RollingFile name="FileLogger" fileName="logs/eternity_gpu.log"
+                     filePattern="logs/eternity_gpu-%d{yyyy-MM-dd}-%i.log">
+            <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss} [%-5level] [%t] %logger{36} - %msg%n"/>
+            <Policies>
+                <SizeBasedTriggeringPolicy size="10MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="20"/>
+        </RollingFile>
+    </Appenders>
+
+    <Loggers>
+        <Root level="info">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="FileLogger"/>
+        </Root>
+    </Loggers>
+</Configuration>
