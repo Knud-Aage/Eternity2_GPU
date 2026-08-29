@@ -70,114 +70,8 @@ public class ConflictReducer {
     }
 
     /**
-     * Randomised-restart hole filler, for boards that still have empty positions
-     * (marked -1 or -2). Each trial shuffles the holes into a random order and
-     * fills them one at a time with whichever unused piece/orientation best
-     * matches the neighbours already on the board (fewest edge mismatches),
-     * ties broken randomly. The best board found across all trials (fewest
-     * total conflicts) is then polished with {@link #reducePostProcess} and
-     * returned.
-     *
-     * @param board  The board to fill (NOT modified in-place — a fully-filled
-     *               copy is returned; pass the result to your record-saving code).
-     * @param trials Number of random fill attempts (100,000+ recommended;
-     *               each trial is cheap so millions are feasible for post-processing).
-     * @return       The best fully-filled board found, already polished.
-     */
-    public int[] randomRestartFill(int[] board, int trials) {
-        List<Integer> holePositions = new ArrayList<>();
-        for (int i = 0; i < 256; i++) {
-            if (board[i] == -1 || board[i] == -2) holePositions.add(i);
-        }
-        if (holePositions.isEmpty()) return Arrays.copyOf(board, 256);
-
-        boolean[] usedPhysical = new boolean[256];
-        for (int i = 0; i < 256; i++) {
-            int p = board[i];
-            if (p != -1 && p != -2) {
-                int physId = getPhysId(p);
-                if (physId >= 0) usedPhysical[physId] = true;
-            }
-        }
-        List<Integer> unusedPhysIds = new ArrayList<>();
-        for (int physId = 0; physId < 256; physId++) {
-            if (!usedPhysical[physId]) unusedPhysIds.add(physId);
-        }
-
-        Random rnd = new Random();
-        int[] bestBoard = fillOnce(board, holePositions, unusedPhysIds, rnd);
-        int bestConflicts = countConflicts(bestBoard);
-
-        for (int t = 1; t < trials; t++) {
-            int[] trial = fillOnce(board, holePositions, unusedPhysIds, rnd);
-            int conflicts = countConflicts(trial);
-            if (conflicts < bestConflicts) {
-                bestConflicts = conflicts;
-                bestBoard = trial;
-                if (bestConflicts == 0) break;
-            }
-        }
-
-        int polished = reducePostProcess(bestBoard, 50);
-        logger.info(String.format(
-                ">>> [RANDOM RESTART FILL] %d trials on %d holes → best fill %d conflicts → polished to %d.",
-                trials, holePositions.size(), bestConflicts, polished));
-        return bestBoard;
-    }
-
-    /**
-     * Fills every hole once, in a random order, choosing at each hole the
-     * unused piece/orientation with the fewest edge mismatches against
-     * whatever neighbours are already placed. Ties are broken randomly.
-     */
-    private int[] fillOnce(int[] sourceBoard, List<Integer> holePositions, List<Integer> unusedPhysIds, Random rnd) {
-        int[] trial = Arrays.copyOf(sourceBoard, 256);
-        List<Integer> holes = new ArrayList<>(holePositions);
-        Collections.shuffle(holes, rnd);
-        List<Integer> remaining = new ArrayList<>(unusedPhysIds);
-
-        for (int pos : holes) {
-            int row = pos / 16, col = pos % 16;
-            int northReq = (row == 0)  ? 0 : (isPlaced(trial[pos - 16]) ? PieceUtils.getSouth(trial[pos - 16]) : -1);
-            int southReq = (row == 15) ? 0 : (isPlaced(trial[pos + 16]) ? PieceUtils.getNorth(trial[pos + 16]) : -1);
-            int westReq  = (col == 0)  ? 0 : (isPlaced(trial[pos - 1])  ? PieceUtils.getEast(trial[pos - 1])   : -1);
-            int eastReq  = (col == 15) ? 0 : (isPlaced(trial[pos + 1])  ? PieceUtils.getWest(trial[pos + 1])   : -1);
-
-            int bestViolations = Integer.MAX_VALUE;
-            List<int[]> bestCandidates = new ArrayList<>(); // {remainingIndex, orientedPiece}
-
-            for (int k = 0; k < remaining.size(); k++) {
-                int physId = remaining.get(k);
-                for (int r = 0; r < 4; r++) {
-                    int candidate = inventory.allOrientations[physId * 4 + r];
-
-                    int violations = 0;
-                    if (northReq != -1 && PieceUtils.getNorth(candidate) != northReq) violations++;
-                    if (southReq != -1 && PieceUtils.getSouth(candidate) != southReq) violations++;
-                    if (westReq  != -1 && PieceUtils.getWest(candidate)  != westReq)  violations++;
-                    if (eastReq  != -1 && PieceUtils.getEast(candidate)  != eastReq)  violations++;
-
-                    if (violations < bestViolations) {
-                        bestViolations = violations;
-                        bestCandidates.clear();
-                        bestCandidates.add(new int[]{k, candidate});
-                    } else if (violations == bestViolations) {
-                        bestCandidates.add(new int[]{k, candidate});
-                    }
-                }
-            }
-
-            int[] chosen = bestCandidates.get(rnd.nextInt(bestCandidates.size()));
-            trial[pos] = chosen[1];
-            remaining.remove(chosen[0]);
-        }
-
-        return trial;
-    }
-
-    /**
-     * Most-Constrained-Variable (MCV) hole filler: like {@link #randomRestartFill},
-     * but instead of visiting holes in a random (or any fixed) order, it always
+     * Most-Constrained-Variable (MCV) hole filler:
+     * instead of visiting holes in a random (or any fixed) order, it always
      * fills whichever remaining hole currently has the MOST already-determined
      * neighbour edges next, re-evaluating after every placement.
      *
@@ -235,9 +129,6 @@ public class ConflictReducer {
         }
 
         int polished = reducePostProcess(bestBoard, 50);
-//        logger.info(String.format(
-//                ">>> [MCV RESTART FILL] %d trials on %d holes → best fill %d conflicts → polished to %d.",
-//                trials, holePositions.size(), bestConflicts, polished));
         return bestBoard;
     }
 
@@ -333,12 +224,6 @@ public class ConflictReducer {
         for (int pass = 0; pass < maxPasses; pass++) {
             int afterRotation = rotationPass(board);
             int afterSwap     = swapPass(board);
-
-//            if (verbose) {
-//                logger.info(String.format(
-//                        ">>> [CONFLICT REDUCER] Pass %d: %d → rot→%d → swap→%d",
-//                        pass + 1, current, afterRotation, afterSwap));
-//            }
 
             if (afterSwap >= current) break; // no improvement — stop early
             current = afterSwap;

@@ -3,17 +3,6 @@ package dk.puzzle.blackwood;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Flattens an already-{@link BlackwoodSolver#prepare()}d solver's candidate tables into the
- * CSR (offset+count index, in {@code __constant__} memory) plus flat payload (in global device
- * memory) layout {@code SolveBlackwoodKernel.cu} expects. Pure data transformation, no CUDA calls
- * -- fully unit-testable without a GPU.
- *
- * <p>Deliberately reuses {@link BlackwoodSolver#prepare()}'s already-verified table fields
- * directly rather than re-deriving table construction a second time -- the single biggest
- * fidelity-risk reducer for the GPU port, since the kernel then sees exactly the same tables
- * the verified CPU port trusts.</p>
- */
 public final class BwGpuTables {
 
     public static final int NUM_TABLES = 10;
@@ -30,8 +19,6 @@ public final class BwGpuTables {
     public static final int TABLE_WEST_START = 8;
     public static final int TABLE_START = 9;
 
-    /** row==0 steps bypass c_stepToTableId entirely (handled directly in the kernel, mirroring
-     *  BlackwoodSolver.solvePuzzle()'s own row==0 special case) -- this value is never read. */
     public static final int TABLE_UNUSED_ROW0 = -1;
 
     private BwGpuTables() {
@@ -69,7 +56,6 @@ public final class BwGpuTables {
         return new BwRotatedPiece(pieceNumber, rotations, topSide, rightSide, breakCount, heuristicSideCount);
     }
 
-    /** The 10 batch-level tables, in the fixed order the TABLE_* constants index into. */
     private static BwRotatedPiece[][][] tablesInOrder(BlackwoodSolver solver) {
         return new BwRotatedPiece[][][]{
                 solver.corners, solver.leftSides, solver.topSides,

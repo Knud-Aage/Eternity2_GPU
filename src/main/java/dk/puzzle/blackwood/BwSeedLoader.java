@@ -51,21 +51,6 @@ public final class BwSeedLoader {
     public record Seed(Path source, int depth, int[] stepEncoded, String link, int conflicts) {
     }
 
-    /**
-     * @param dirs         directories to scan (missing ones are skipped, not an error)
-     * @param minDepth     ignore boards shallower than this
-     * @param maxSeeds     keep at most this many, deepest first
-     * @param stepBoardIdx step -> board index, from {@code GpuTableSet.stepBoardIdx}
-     */
-    // Matches ONLY files known to be in Blackwood's own piece numbering (row 15 first, plain
-    // pieceNumber/rotation) -- the legacy "<pieces>_<uuid>_<n>.txt" convention, and its 2026-08-18
-    // successor "..._baseboard.txt", which is the SAME format under a name that survives labelling
-    // instead of being deleted. Deliberately excludes "*_RawBoard.txt"/"*_physical_layout.txt": those
-    // use HoleSolver's own internal piece indexing (Java's PieceInventory.physicalMapping), a
-    // DIFFERENT numbering entirely -- confirmed directly while reconstructing bucas links earlier
-    // this project. A blanket "*.txt" scan would have fed those straight into parse() as if they
-    // were Blackwood-numbered, producing a seed built from the wrong pieces with no error at all
-    // (parse() has no way to detect the mismatch -- the numbers just happen to also be small ints).
     private static final java.util.regex.Pattern LEGACY_NAME =
             java.util.regex.Pattern.compile("^\\d+_[0-9a-fA-F-]+_\\d+\\.txt$");
     private static final java.util.regex.Pattern BASEBOARD_NAME =

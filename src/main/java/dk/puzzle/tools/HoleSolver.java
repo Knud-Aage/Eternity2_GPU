@@ -61,18 +61,6 @@ public class HoleSolver {
         }
     }
 
-    // Blackwood's own solver (github.com/jblackwood345/EternityII_Solver,
-    // Program.cs Save_Board) writes bucas links using his RAW internal colour
-    // IDs directly -- no remap at all, unlike BucasExporter's THESIL_TO_BUCAS
-    // step. Decoding one of his links with BUCAS_TO_THESIL (i.e. assuming
-    // bucas-standard numbering) silently scrambles every already-placed piece
-    // into colours that don't match any real piece in this project's
-    // database (confirmed 2026-08-02: every one of 251 placed cells failed
-    // findPhysicalId when decoded that way) -- which then lets the hole-fill
-    // "solve" using pieces already used elsewhere on the board, an invalid
-    // Eternity II completion. See dk.puzzle.blackwood.BwUtil.BLACKWOOD_TO_THESIL
-    // (moved there 2026-08-02 as the single source of truth once GpuEngine
-    // needed the same mapping) for how this table was derived.
     private static final int[] BLACKWOOD_TO_THESIL = dk.puzzle.blackwood.BwUtil.BLACKWOOD_TO_THESIL;
 
     // Generous but bounded, so a genuinely unsatisfiable hole shape fails fast
@@ -520,11 +508,6 @@ public class HoleSolver {
         int amp = rest.indexOf('&');
         String puzzleName = amp == -1 ? rest : rest.substring(0, amp);
         String lower = puzzleName.toLowerCase();
-        // "knud_hansen" (2026-08-04, cosmetic rename of BwUtil.buildBoardString's puzzle= name --
-        // see that method) is checked with its underscore so it doesn't collide with
-        // BucasExporter's unrelated bucas-standard "KnudHansen" (no underscore) puzzle name used
-        // for already-normalized completed boards. Old saved links still say "Joshua_Blackwood"
-        // and must keep working too.
         return lower.contains("blackwood") || lower.contains("knud_hansen");
     }
 
@@ -549,8 +532,7 @@ public class HoleSolver {
      * and switches to it if that resolves meaningfully more of the board.
      * This is a genuine detect-and-correct step, not just a warning — a
      * wrong guess here previously let hole-filling "solve" using pieces
-     * already placed elsewhere on the board, an invalid completion (see the
-     * 2026-08-02 investigation that motivated this method).
+     * already placed elsewhere on the board, an invalid completion.
      */
     public static int[] decodeBoardAuto(String input, PieceInventory inventory, boolean verbose) {
         final double MIN_RESOLVED_FRACTION = 0.9;

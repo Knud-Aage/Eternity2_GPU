@@ -8,19 +8,6 @@ import java.io.BufferedReader;
 import java.io.FileReader;
 import java.util.Random;
 
-/**
- * Loads the 256-piece Eternity II set from {@code pieces.csv}.
- *
- * <p>Extracted verbatim from this project's original {@code Eternity} class, which was a
- * Swing GUI entry point. The solver only ever needed this one static method from it, so
- * carrying the whole GUI class (and everything it transitively pulled in) into this
- * repository would have meant shipping the entire evolutionary-solver and visualisation
- * stack to call a CSV reader.</p>
- *
- * <p>Format is TheSil's: one piece per line, {@code index,east,south,west,north}, with an
- * optional header line and empty colour fields meaning grey (border). Read by bare relative
- * path, so the process working directory must be the repository root.</p>
- */
 public final class PieceLoader {
 
     private static final Logger logger = LogManager.getLogger(PieceLoader.class);
@@ -75,10 +62,6 @@ public final class PieceLoader {
         return generateMock();
     }
 
-    /**
-     * Parses a color field from the CSV, returning 0 for empty or missing fields.
-     * TheSil's format uses empty fields for grey (border) edges.
-     */
     private static int parseColorField(String field) {
         if (field == null) return 0;
         String trimmed = field.trim();
@@ -90,14 +73,6 @@ public final class PieceLoader {
         }
     }
 
-    /**
-     * A random, self-consistent 16x16 piece set, used only when pieces.csv can't be read.
-     *
-     * <p>Kept for behavioural parity with the original, but the callers above now log the
-     * fallback at ERROR rather than INFO: a silent downgrade to mock data has bitten this
-     * project before (a tool invoked with the wrong working directory produced plausible
-     * but meaningless conflict counts for hours before anyone noticed).</p>
-     */
     private static int[] generateMock() {
         int dim = 16;
         int[][] hEdges = new int[dim][dim + 1];

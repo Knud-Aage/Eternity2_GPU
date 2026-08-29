@@ -83,112 +83,20 @@ public class BlackwoodGpuRunner {
     private static final long MIN_STEP_BUDGET = 1_000L;
     private static final long FAST_LAUNCH_MILLIS = 4_000L;  // below this, double the budget next launch
     private static final long SLOW_LAUNCH_MILLIS = 10_000L; // above this, halve it
-
-    // How many launches share one table generation + persisted thread-search-state before
-    // everything resets fresh (a table rebuild re-randomizes candidate order, so every resume
-    // cursor into the old tables must be discarded with it -- see BlackwoodGpuEngine.resetEpoch).
-    //
-    // 2026-08-17, measured (BlackwoodGpuEpochResetHarness), equal wall-clock per arm, reset being
-    // the ONLY difference:
-    //     16384 threads: mean population depth  76.7 (reset every 60)  ->  174.4 (never)
-    //      1024 threads: mean population depth 100.6 (reset every 60)  ->  205.1 (never)
-    // Max depth likewise 236->248 and 245->248. The old value was costing roughly HALF the
-    // population's accumulated depth: climbing from scratch to ~247 takes ~30s, and at this
-    // launch cadence a 60-launch epoch is only about a minute, so most of every epoch was spent
-    // re-covering ground the previous epoch had already covered, over and over.
-    //
-    // The rebuild's purpose is diversification, but that is already supplied per-thread (each
-    // thread re-randomizes its own bottomSides every attempt from its own RNG stream), so the
-    // global rebuild was buying very little of it at a very high price. Kept rather than removed
-    // outright so tables never go stale indefinitely -- just at an interval that no longer
-    // truncates the sustained backtracking this algorithm depends on.
     private static final long EPOCH_LAUNCHES = 20_000;
-
-    // Seeding from previously saved deep boards. The kernel reaches ~247 pieces from scratch in
-    // about 30 seconds but took three days of running to reach 251, so nearly all of the compute
-    // spent re-deriving the first ~247 pieces is spent re-covering known ground. Resuming from the
-    // deepest boards already on disk puts every thread at the frontier instead.
-    // MIN_SEED_DEPTH is deliberately just below the best boards on disk -- shallower boards would
-    // dilute the pool without adding frontier coverage.
     private static final int MIN_SEED_DEPTH = 245;
     private static final int MAX_SEEDS = 256;
     // How far back from a seed's tip a thread may randomly pull before resuming. Needed for
     // diversity (candidate order is global, so same board + same depth = duplicated work), and it
     // also lets threads explore alternatives that branch off well below the tip.
-    //
-    // 2026-08-17, A/B'd (BlackwoodGpuRetreatHarness), 4 arms x 180s, fresh held at 10% so retreat
-    // is the only variable. Novel = distinct population best-boards that are not a seed handed back
-    // unchanged; conflicts are real HoleSolver completions over a sample of those:
-    //     retreat   novel   bestConf   medConf
-    //          40      98         13        14
-    //         100     122         12        14
-    //         180     215         13        19
-    //         250     301         13        20
-    // 100 dominates the old 40 on all three: more novel boards, better best, equal median. And it
-    // was the only arm to produce a NOVEL 12-conflict board -- one not in the seed pool -- i.e. the
-    // first genuinely independent record-tying board the GPU has produced rather than replayed.
-    //
-    // Past ~100 the same trade the fresh fraction showed reappears: much more diversity, much worse
-    // quality. Unfreezing most of the board discards the very structure that made the seed good.
-    //
-    // Caveat: bestConf is a min over a 25-board sample, so the single 12 could be luck. What
-    // actually justifies 100 over 40 is that its MEDIAN is equal-best while producing 24% more
-    // novel boards -- the tail result is a bonus, not the argument.
     private static final int MAX_RETREAT = 100;
     // Percentage of attempts that ignore the seeds and start from a random corner.
-    //
-    // Without this the run is a CLOSED loop: every thread resumes one of a small set of archive
-    // boards and only re-explores its last MAX_RETREAT steps, so the population never leaves the
-    // neighbourhood of boards the C# solver already searched for days -- plausibly exhausted
-    // ground, with no mechanism to look elsewhere. The fresh fraction is what lets a genuinely new
-    // board be found, scored, saved, and then picked up as a seed at the next epoch, closing the
-    // explore/exploit loop instead of just exploiting.
-    //
-    // 2026-08-17, A/B'd (BlackwoodGpuFreshFractionHarness), 4 arms x 180s, 1024 threads, identical
-    // 59-board seed pool. Novel boards = distinct population best-boards that are NOT a seed handed
-    // back unchanged; conflicts are real HoleSolver completions over a sample of those:
-    //     fresh%   novel   bestConf   medConf
-    //          0      44         13        14
-    //         25     203         13        17
-    //         50     326         13        19
-    //        100     684         18        20
-    // The fresh fraction buys diversity and pays for it in quality: 0/25/50 all TIE on best board
-    // found, while median quality degrades monotonically, and pure exploration cannot even reach
-    // the seeded arms' depth. No arm beat the seed pool's own best (12).
-    //
-    // Two things this corrects. First, an earlier assumption that 0% is a closed loop that can
-    // never produce anything new -- it produced 44 novel boards, the best-quality set of any arm,
-    // because retreating up to MAX_RETREAT steps and re-searching IS exploration, just local to
-    // known-good boards. Second, the original 25% guess: it is strictly worse than 0% here.
-    //
-    // Kept small but non-zero rather than 0 because the experiment measures the quality
-    // DISTRIBUTION over 3 minutes, not the rare long-horizon event exploration actually exists for
-    // (escaping a basin the whole seed pool may share). That payoff is not measurable at this
-    // timescale, so this is a deliberate hedge, not a measured optimum.
     private static final int FRESH_FRACTION_PERCENT = 10;
     // Candidates to score before ranking. Scoring runs HoleSolver once per board (~1s each), and
     // only at an epoch boundary, so this bounds a startup cost rather than a per-launch one.
     private static final int MAX_SEED_CANDIDATES = 120;
-
-    // 2026-08-18: A/B lever, off by default (seeding stays on, matching production). Set
-    // ETERNITY_GPU_SEEDING=false to test pure random-restart search -- WITH the epoch-reset and
-    // thread-count fixes still active, unlike the original unseeded runs that motivated seeding in
-    // the first place. Exists because the evidence since has pointed the other way: seeded search's
-    // own duplicate-detection sweep found 28 unique boards out of 59 saved (more than half were the
-    // same board re-derived from a different retreat point), and both the retreat and fresh-fraction
-    // A/Bs showed perturbing away from the seed makes results MORE diverse and WORSE, never better --
-    // the signature of a narrow local optimum, not a neighbourhood with better boards nearby. Matches
-    // Blackwood's own account of his 470: a month of continuous pure random-restart search on one
-    // PC, his own word for it "luck" -- not refinement of a near-miss.
     private static final boolean SEEDING_ENABLED =
             !"false".equalsIgnoreCase(System.getenv("ETERNITY_GPU_SEEDING"));
-
-    // 2026-08-18, verified (BlackwoodGpuSharedCacheHarness): bit-identical results to the
-    // constant-memory kernel across chained launches (same highScore, nodesTaken, threadDepths,
-    // best board), so this is a pure speed change, not a behaviour change. Equal-GPU-time A/B
-    // (180s/arm): 206 launches vs 153 (+35%), max depth 247 vs 245, mean depth 226.4 vs 223.7.
-    // Divergence profile unaffected either way (100% warp efficiency both configurations, as
-    // expected -- shared memory targets __constant__ cache-miss latency, not warp lockstep).
     private static final boolean SHARED_CACHE_ENABLED =
             !"false".equalsIgnoreCase(System.getenv("ETERNITY_GPU_SHARED_CACHE"));
 
@@ -209,43 +117,12 @@ public class BlackwoodGpuRunner {
     // the main launch loop, only on the (already rare) event of a new per-run depth record, but
     // still shouldn't stall launches for longer than that cadence tolerates.
     private static final int SCORING_TRIALS = 5000;
-
-    // Population harvesting.
-    //
-    // 2026-08-17: without this the run can save NOTHING. trySave is only reached when a launch
-    // beats the running depth high score, and that high score sits at 252 (recovered from disk) --
-    // so a 250-piece board completing to 11 conflicts is thrown away without ever being scored.
-    // Fixing the save criterion to use conflicts (earlier today) fixed the wrong level: the GATE
-    // was still depth. Confirmed empirically -- the retreat A/B found a novel 12-conflict board
-    // that production would have discarded, because it was not deeper than 252.
-    //
-    // So periodically read the whole population's best boards, score the deepest previously-unseen
-    // ones, and save on conflicts alone. Interval and sample were originally sized so scoring
-    // (~1s/board, estimated) would stay a few percent of wall time: 12 boards per ~300 launches
-    // as ~12s per ~3.5 minutes.
-    //
-    // 2026-08-25: raised 12->100. Measured cost is actually ~0.3s/board (eternity_solver.log:
-    // 12 boards score in 3-4s wall clock per harvest), and the eligible population dwarfs the old
-    // sample -- a launch sampled at the same time showed depth[min=244 mean=246.6 max=251] across
-    // all 16384 threads, i.e. the ENTIRE population already clears HARVEST_MIN_DEPTH=240, so a
-    // top-12-by-depth cut was scoring under 0.1% of it. That matters because depth doesn't cleanly
-    // predict the post-HoleSolver conflict count (observed directly: depth-250 boards scoring
-    // 15/15/17 conflicts alongside depth-248 boards ranging 14-18), so a narrow top-N window misses
-    // better boards sitting just below the max depth. 100 boards/harvest is ~30s, still only ~1-2%
-    // of the ~22-25min interval between harvests at current launch speed -- HARVEST_INTERVAL has
-    // enough headroom on its own that it doesn't need to shrink to afford the bigger sample.
     private static final int HARVEST_INTERVAL = 300;
     private static final int HARVEST_SAMPLE = 100;
     private static final int HARVEST_MIN_DEPTH = 240;
     /** Boards already scored, so a stable population isn't re-scored every harvest. */
     private static final Set<String> harvestedFingerprints = new HashSet<>();
     private static final int HARVEST_MEMORY_CAP = 200_000;
-    /**
-     * Fingerprints of the current seed boards. A thread that replayed its seed and never improved
-     * on it still holds that seed as its best board, so without this the harvest re-saves the seed
-     * pool back into the output folder under new names -- inflating it with copies of boards that
-     * already exist and diluting the next epoch's seed pool with duplicates.
-     */
     private static final Set<String> seedFingerprints = new HashSet<>();
     /**
      * Completed boards already saved, keyed by their bucas encoding.
@@ -260,10 +137,6 @@ public class BlackwoodGpuRunner {
     private static final Set<String> savedCompletedBoards = new HashSet<>();
 
     public static void main(String[] args) throws Exception {
-        // NOT Documents: it is OneDrive-redirected by Known Folder Move on this machine, so every
-        // board saved here was being uploaded to the cloud. UserProfile is never redirected.
-        // Same reasoning (and the same override-by-env-var escape hatch) as the C# solver's own
-        // save path. Override with ETERNITY_GPU_SOLUTIONS_DIR to put boards on another drive.
         String configuredDir = System.getenv("ETERNITY_GPU_SOLUTIONS_DIR");
         Path outputDir = (configuredDir == null || configuredDir.isBlank())
                 ? Path.of(System.getProperty("user.home"), "EternitySolutions_GpuBlackwood")
@@ -440,13 +313,6 @@ public class BlackwoodGpuRunner {
     private static final Pattern LABELLED_NAME = Pattern.compile("^Errors(\\d+)_Base(\\d+)_.*_RawBoard\\.txt$");
     private static final Pattern LEGACY_NAME = Pattern.compile("^(\\d+)_[0-9a-fA-F-]+_\\d+\\.txt$");
 
-    /**
-     * Recovers {@code currentHighScore} from the boards already saved on disk from a previous run,
-     * instead of always starting bookkeeping at 0. Reads both this method's own {@code ErrorsN_BaseD_...}
-     * naming (introduced 2026-08-17 alongside conflict-based save gating -- see {@link #trySave}) and
-     * the older {@code "<pieces>_<uuid>_<timestamp>.txt"} files it superseded, so a restart doesn't
-     * regress to comparing against 0 just because every save on disk predates the rename.
-     */
     static int scanExistingHighScore(Path outputDir) {
         if (!Files.isDirectory(outputDir)) return 0;
         int max = 0;
@@ -470,24 +336,6 @@ public class BlackwoodGpuRunner {
         return max;
     }
 
-    /**
-     * Depth was the save criterion until 2026-08-17, and it is a poor proxy for what's actually
-     * wanted: a board's REAL quality only shows up after hole-filling, and depth doesn't predict it
-     * monotonically. Confirmed directly -- a GPU-found 252-piece board completed to 13 conflicts,
-     * while a 251-piece board already in the CPU archive completes to 12. Maximizing depth was
-     * actively steering the GPU away from its own better boards.
-     *
-     * <p>Runs the same completion HoleSolver already does for the C# and CPU-port pipelines, in
-     * process (no subprocess -- this IS Java, {@link HoleSolver}'s methods are directly callable),
-     * and only saves if the REAL conflict count is competitive. This also incidentally fixes a
-     * second problem: a board that's just a replayed, unmodified seed cannot beat the board it came
-     * from, so it no longer gets saved back under a new name.</p>
-     */
-    /**
-     * Scores the deepest previously-unseen boards in the live population and saves any that are
-     * competitive on conflicts. See HARVEST_INTERVAL for why this exists: the depth-record path
-     * alone saves nothing once the seed pool's own depth is already the ceiling.
-     */
     private static void harvestPopulation(BlackwoodGpuEngine engine, int[] threadDepths,
                                           BwPiece[] pieceByNumber, PieceInventory inventory, Path outputDir) {
         try {
@@ -597,15 +445,6 @@ public class BlackwoodGpuRunner {
 
             int bestOnDisk = bestConflictsOnDisk(outputDir);
             int keepThreshold = (bestOnDisk == Integer.MAX_VALUE) ? Integer.MAX_VALUE : bestOnDisk + 1;
-            // 2026-08-28: exact=true/false measures how often HoleSolver's primary MRV
-            // completion (RegionSolver) fully clears every region vs. falling back to the
-            // weaker MCV-heuristic repair (see HoleSolver.solveConflicts) -- repairedBoard()
-            // is non-null exactly when the fallback ran. budgetExhausted distinguishes WHY:
-            // true means a region hit its step budget inconclusively (more budget/a rewind
-            // could plausibly help); false means the region's search tree was fully exhausted,
-            // proving no zero-conflict rearrangement exists (more budget cannot change that).
-            // Only budgetExhausted=true cases are evidence for building an igorpejic-style
-            // adaptive-rewind tail -- see ConflictSolveResult's own doc for the full reasoning.
             boolean exact = result.repairedBoard() == null;
             boolean budgetExhausted = result.anyRegionBudgetExhausted();
             if (conflicts > keepThreshold) {
@@ -637,14 +476,9 @@ public class BlackwoodGpuRunner {
             HoleSolver.writePhysicalLayoutFile(outputDir.resolve(prefix + "_physical_layout.txt").toString(),
                     inventory, result.finalBoard(), result.repairedBoard());
             HoleSolver.writeRawBoardFile(outputDir.resolve(prefix + "_RawBoard.txt").toString(), inventory, completed);
-            // Third sibling, in Blackwood's OWN piece numbering (boardString, already computed above
-            // to build the partial-board link) -- unlike the two files above, which use HoleSolver's
-            // internal numbering, this is what BwSeedLoader can actually read directly as a future
-            // seed. Same rationale as the C# solver's Util.cs baseboard rename.
             Files.writeString(outputDir.resolve(prefix + "_baseboard.txt"), boardString);
             logger.info("SAVED [{}]: {} pieces, {} conflicts -> {}, exact={}, budgetExhausted={}",
                     depthRecord ? "depth-record" : "harvest", maxSolveIndex, conflicts, prefix, exact, budgetExhausted);
-            // Same convention as the C# solver's Util.cs, so both logs are grep-able the same way.
             logger.info("COMPLETED_LINK {}_RawBoard.txt: {}", prefix, completedLink);
             appendCompletedLink(prefix, conflicts, maxSolveIndex, completedLink);
             DriveUploader.uploadRecord(prefix, conflicts, completedLink, "GPU");

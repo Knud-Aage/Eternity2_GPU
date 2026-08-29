@@ -15,55 +15,13 @@ import java.util.Map;
 import java.util.Random;
 import java.util.function.ToIntFunction;
 
-/**
- * Static helpers mirroring Blackwood's {@code Util.cs} — table construction,
- * board order, break/heuristic schedules, and the Save_Board text format.
- * Everything here stays in his own raw 0-22 colour numbering.
- */
 public final class BwUtil {
 
     public static final int[] SIDE_EDGES = {1, 5, 9, 13, 17};
     public static final int[] HEURISTIC_SIDES = {13, 16, 10};
-    // 9-break (239 dropped). Shared by BlackwoodSolver (Java CPU port) AND BlackwoodGpuRunner.
-    //
-    // THE DECIDING REASON (2026-08-24): the goal is 471 = 9 conflicts. A search granted 10 breaks
-    // can spend all 10, so its best possible product is a 10-conflict board (470). Reaching 471
-    // structurally REQUIRES a 9-entry schedule. 10-break cannot get there by definition, however
-    // well it performs on intermediate metrics.
-    //
-    // Both schedules have produced 12-conflict boards here, so neither is "better" on results:
-    //   - 9-break 12s: logs/drop239_current.log (header confirms break_indexes without 239),
-    //     Errors12_Base249 and Errors12_Base250, 2026-08-19.
-    //   - 10-break 12s: 2026-08-13 (C#), and 2026-08-17 22:56/23:39 (GPU, inside a seeded-replay
-    //     window, so possibly not organic finds).
-    // A 2026-08-18 comment here once credited the 9-break switch with those 2026-08-17 GPU boards;
-    // that was wrong (they predate commit 54095c3 by ~18h), but the C# drop_239 run above is a
-    // separate, genuine 9-break result.
-    //
-    // Known cost, accepted deliberately: the leave-one-out sweep measured drop_239 reaching depth
-    // 248 ~70x more rarely than 10-break (0.2% vs 14.1%) -- though at a 500M node cap rather than
-    // production's 50B, and scored on raw depth rather than post-HoleSolver conflicts, so how much
-    // of that penalty transfers to production is not established.
     public static final int[] BREAK_INDEXES_ALLOWED = {201, 206, 211, 216, 221, 225, 229, 233, 237};
     public static final int MAX_HEURISTIC_INDEX = 160;
 
-    /**
-     * Maps Blackwood's raw colour IDs (index) to this project's TheSil colour numbering (value) --
-     * NOT used anywhere in this port's own search (which deliberately stays entirely in Blackwood's
-     * own numbering, see class javadoc). Only for consumers outside the port that need to relate his
-     * colours to TheSil-numbered data: {@code HoleSolver} decoding his published bucas links, and
-     * {@code GpuEngine} translating his side-edge/heuristic colour constants before applying them
-     * against a TheSil-numbered {@code PieceInventory}.
-     *
-     * <p>Derived (not guessed): {@code pieces.csv} and {@code JBlackwood_Pieces.txt} list the same
-     * 256 physical pieces at the same index, so trying all 4 rotations of each Blackwood entry
-     * against the fixed TheSil entry and requiring a single globally-consistent colour bijection
-     * across all 256 pieces (zero contradictions) both confirms that assumption and yields this
-     * table. Originally derived and verified in {@code HoleSolver} (2026-08-02, confirmed there that
-     * decoding one of Blackwood's links with bucas-standard numbering instead scrambles every placed
-     * piece into colours matching no real piece in this project's database); moved here as the
-     * single source of truth once a second consumer ({@code GpuEngine}) needed it too.
-     */
     public static final int[] BLACKWOOD_TO_THESIL = {
             0, 1, 6, 22, 17, 3, 8, 10, 12, 4, 7, 9, 18, 5, 15, 11, 20, 2, 14, 16, 19, 13, 21
     };
@@ -90,7 +48,6 @@ public final class BwUtil {
         return getRotatedPieces(piece, false);
     }
 
-    /** Direct translation of Util.Get_Rotated_Pieces(Piece, bool). */
     public static List<RotatedCandidate> getRotatedPieces(BwPiece piece, boolean allowBreaks) {
         int score = 0;
         int heuristicSideCount = 0;
@@ -226,14 +183,6 @@ public final class BwUtil {
         return arr;
     }
 
-    /**
-     * Piecewise-linear heuristic-coverage schedule, meaningful only for index &lt;= MAX_HEURISTIC_INDEX
-     * (0 elsewhere, never read past that by the solver). Literal port of Program.cs's heuristic_array
-     * construction, including its float/double asymmetry: the first four branches explicitly cast their
-     * coefficients to float (float32 arithmetic throughout), but the last branch's divisor (4.4615) is an
-     * un-suffixed C# double literal, promoting that division to double precision. This is preserved exactly
-     * (NOT rounded to a uniform precision) because boundary indices are float32-rounding-sensitive.
-     */
     public static int[] getHeuristicArray() {
         int[] arr = new int[256];
         for (int i = 0; i < 256; i++) {
@@ -290,11 +239,6 @@ public final class BwUtil {
         return new BoardOrder(rows, cols);
     }
 
-    /**
-     * Loads Blackwood's raw piece data via JBlackwoodToBucas.loadHisPieces. Unlike Eternity.loadPieces(),
-     * this never falls back to mock data on failure — it fails loud with a clear message, since silently
-     * verifying against wrong piece data would be worse than a crash.
-     */
     public static List<BwPiece> getPieces(String piecesFilePath) throws IOException {
         int[][] raw;
         try {
@@ -336,10 +280,6 @@ public final class BwUtil {
             }
             grid.append(row).append('\n');
         }
-        // Cosmetic only (2026-08-04, user request) -- the puzzle= name has no effect on the
-        // encoded board itself. HoleSolver.looksLikeBlackwoodSource() still needs to recognize
-        // this name to auto-detect raw-colour boards; keep the two in sync if this ever changes
-        // again.
         return grid + "\n" + "https://e2.bucas.name/#puzzle=Knud_Hansen&board_w=16&board_h=16&board_edges="
                 + url + "&motifs_order=jblackwood";
     }

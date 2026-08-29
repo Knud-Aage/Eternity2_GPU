@@ -31,36 +31,15 @@ import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Faithful port of Blackwood's {@code Program.cs} — table orchestration, the
- * per-attempt chronological-backtracking search, and the outer batch loop.
- * Runs entirely in his own raw colour numbering; see BwUtil/BwPiece.
- */
 public class BlackwoodSolver {
 
     private static final Logger logger = LogManager.getLogger(BlackwoodSolver.class);
 
-    // 2026-08-20 (ab_break9_cap25/cap100 vs ab_break9, all 8h): 25B/50B/100B tied on best (14) and
-    // mean/median (~16.9/17) -- no quality difference found, but that 4x range never got anywhere
-    // near GPU's persistent-lineage scale (~164 trillion nodes/epoch, 3000x+ beyond 50B), so it
-    // doesn't settle whether a much larger cap matters. Overridable so that can actually be tested.
     static final long DEFAULT_NODE_CAP = parseLongEnv("ETERNITY_NODE_CAP", 50_000_000_000L); // matches C# `node_count > 50000000000`
-    // 2026-08-19: raised 190 -> 248 to match the C# solver's own Program.cs, which made the same
-    // change after 190 produced 389,856 boards (377K of them below 248, averaging 18-19 conflicts
-    // vs the 12-conflict record) that flooded OneDrive and that nothing downstream reads -- the
-    // conflict tracker's own floor is 248. Keep these two numbers in step (their comment says the
-    // same thing back).
     private static final int DEFAULT_SAVE_THRESHOLD = 248;
     private static final int ATTEMPTS_PER_WORKER_PER_BATCH = 5;
-    // Matches the C# solver's / GPU runner's own trial count for HoleSolver's completion pass.
     private static final int SCORING_TRIALS = 5000;
-    // 2026-08-19: labelled save format, matching the GPU runner and C# solver -- conflicts first
-    // in the name so the three engines' output is directly comparable at a glance, and so
-    // BwSeedLoader (which already recognizes this exact pattern) can use this port's own best
-    // boards as seeds elsewhere.
     private static final Pattern LABELLED_NAME = Pattern.compile("^Errors(\\d+)_Base(\\d+)_.*_RawBoard\\.txt$");
-    // 2026-08-19: dedicated links-only log, mirroring BlackwoodGpuRunner's COMPLETED_LINKS_LOG --
-    // same reasoning, same format, so both are grep-able the same way.
     private static final Path COMPLETED_LINKS_LOG = Path.of("logs", "java_port_completed_links.log");
 
     private final int saveThreshold;
@@ -74,17 +53,6 @@ public class BlackwoodSolver {
     // Concurrent: evaluateAndMaybeSave can be called from any of numWorkers worker threads at once.
     private final Set<String> savedCompletedBoards = ConcurrentHashMap.newKeySet();
 
-    // Rebuilt by prepare() once per outer batch; read-only for that batch's lifetime.
-    // Safe publication relies on all workers being submit()'d only after prepare()
-    // fully returns (ExecutorService.submit()'s happens-before guarantee) -- no
-    // volatile/synchronized needed, matching how EternitySolver.CpuSearchWorker
-    // already relies on the same pattern in this codebase.
-    //
-    // Package-private (not private): dk.puzzle.blackwood.BwGpuTables (2026-08-02)
-    // reuses these directly to flatten into GPU CSR form rather than re-deriving
-    // table construction a second time -- the single biggest fidelity-risk
-    // reducer for the GPU port, since the kernel then sees exactly the same
-    // tables this already-verified CPU port trusts.
     BwRotatedPiece[][] corners;
     BwRotatedPiece[][] leftSides;
     BwRotatedPiece[][] topSides;
@@ -117,12 +85,6 @@ public class BlackwoodSolver {
     }
 
     private static Path defaultOutputDir() {
-        // 2026-08-19: moved off Documents\... -- Documents is OneDrive-redirected by Known Folder
-        // Move on this machine (see commit 9286a98, "Move C# board output off OneDrive": 389,856
-        // synced files, ~1GB, filled the quota before anyone noticed). UserProfile itself is never
-        // touched by KFM, so this stays local -- same convention as the GPU runner's
-        // ~/EternitySolutions_GpuBlackwood and the C# solver's ~/EternitySolutions, just with its
-        // own suffix so provenance of any given save file is still unambiguous.
         return Path.of(System.getProperty("user.home"), "EternitySolutions_JavaPort");
     }
 
@@ -227,21 +189,6 @@ public class BlackwoodSolver {
         return list.stream().filter(c -> c.rotatedPiece().rotations() == rotation).toList();
     }
 
-    /**
-     * @param lastImprovementNode nodeCount at which maxSolveIndex last increased. Pure
-     *   instrumentation for the 2026-08-24 stagnation study: the gap between this and nodeCount is
-     *   how long the attempt ran without getting any deeper, which is what a stagnation-based
-     *   restart rule would need to be tuned against. Measured before building the rule rather
-     *   than guessing a threshold.
-     */
-    /**
-     * @param maxLateGap largest run of nodes that passed with NO depth gain and was then followed by
-     *   a gain reaching depth >= {@link #LATE_DEPTH}. This is the number a stagnation-based restart
-     *   threshold must exceed: set the threshold below this and the rule would have killed an
-     *   attempt during a quiet spell that was, in fact, about to produce a deep improvement.
-     *   {@code lastImprovementNode} alone can't show this -- it only measures the tail after the
-     *   final gain, not the dry spells between gains.
-     */
     public record SolveResult(int maxSolveIndex, BwRotatedPiece[] board, long nodeCount, boolean completed,
                               long lastImprovementNode, long maxLateGap) {
     }
@@ -369,14 +316,6 @@ public class BlackwoodSolver {
         }
     }
 
-    /**
-     * Completes the board via HoleSolver, and saves it labelled with its real conflict count --
-     * matching the GPU runner's own evaluateAndMaybeSave and the C# solver's TryLabelWithConflictCount,
-     * so all three engines' output is directly comparable and equally disk-disciplined. Only keeps
-     * boards within 1 conflict of whatever is already the best on disk (see pruneAboveThreshold) --
-     * without this gate, this path reproduces exactly the flood that moved the output off OneDrive
-     * in the first place, just with fancier filenames.
-     */
     private void evaluateAndMaybeSave(BwRotatedPiece[] board, int maxSolveIndex) {
         try {
             String boardString = BwUtil.buildBoardString(board, pieceByNumber);
@@ -387,11 +326,6 @@ public class BlackwoodSolver {
             int[] completed = result.bestBoard();
             int conflicts = countConflicts(completed);
 
-            // 2026-08-28: see BlackwoodGpuRunner's identical comment -- measures how often
-            // HoleSolver's exact MRV completion clears every region vs. falling back to MCV
-            // heuristic repair, and (via budgetExhausted) whether that's an inconclusive
-            // budget timeout or a proven dead end, to decide whether an adaptive-rewind tail
-            // is worth building.
             boolean exact = result.repairedBoard() == null;
             boolean budgetExhausted = result.anyRegionBudgetExhausted();
             int bestOnDisk = bestConflictsOnDisk(outputDir);
@@ -414,8 +348,6 @@ public class BlackwoodSolver {
             HoleSolver.writePhysicalLayoutFile(outputDir.resolve(prefix + "_physical_layout.txt").toString(),
                     inventory, result.finalBoard(), result.repairedBoard());
             HoleSolver.writeRawBoardFile(outputDir.resolve(prefix + "_RawBoard.txt").toString(), inventory, completed);
-            // Third sibling, in Blackwood's own piece numbering -- what BwSeedLoader can actually
-            // read as a future seed, same rationale as the GPU runner's own baseboard file.
             Files.writeString(outputDir.resolve(prefix + "_baseboard.txt"), boardString);
             logger.info("Saved new personal best [depth-record]: {} pieces, {} conflicts -> {}, exact={}, budgetExhausted={}", maxSolveIndex, conflicts, prefix, exact, budgetExhausted);
             appendCompletedLink(prefix, conflicts, maxSolveIndex, completedLink);
@@ -525,30 +457,12 @@ public class BlackwoodSolver {
                     numWorkers * ATTEMPTS_PER_WORKER_PER_BATCH, numWorkers,
                     Arrays.toString(BwUtil.BREAK_INDEXES_ALLOWED));
 
-            // 2026-08-24: shared work queue rather than a fixed slice of attempts per worker.
-            //
-            // The old shape was `for each of numWorkers: submit(() -> do exactly N attempts)`, which
-            // puts a barrier at the end of every batch: a worker that finishes its N early has
-            // nothing left to do and idles until the SLOWEST worker finishes its Nth. Attempt
-            // durations vary a lot (they all retire ~50B nodes, but not at the same rate), so that
-            // tail is not small. Measured over 8 complete batches in logs/java_port.log: mean 11.5%
-            // of all worker-time idle, and growing -- pool 7 wasted 4.2% with a 13-minute tail,
-            // pool 14 wasted 16.0% with a 2.6-HOUR tail.
-            //
-            // Same total attempts per batch and the same table-rebuild cadence; the only change is
-            // that a free worker pulls the next attempt instead of waiting. The batch still ends
-            // when all attempts are done, so tables are never rebuilt under a running search
-            // (which would invalidate the candidate tables a worker is mid-way through reading).
             int attemptsThisBatch = numWorkers * ATTEMPTS_PER_WORKER_PER_BATCH;
             ExecutorService executor = Executors.newFixedThreadPool(numWorkers);
             List<Future<?>> futures = new ArrayList<>();
             for (int i = 0; i < attemptsThisBatch; i++) {
                 futures.add(executor.submit(() -> {
                     SolveResult r = solvePuzzle();
-                    // stagnationNodes = how far this attempt ran after its LAST depth gain.
-                    // Kept from the 2026-08-24 stagnation study: measured, found not actionable
-                    // (deep gains follow LONG quiet spells), retained because it costs nothing --
-                    // period-over-period throughput was unchanged with it enabled.
                     logger.info("Attempt done: maxSolveIndex={} nodeCount={} completed={} lastImprovementNode={} stagnationNodes={} maxLateGap={}",
                             r.maxSolveIndex(), r.nodeCount(), r.completed(),
                             r.lastImprovementNode(), r.nodeCount() - r.lastImprovementNode(), r.maxLateGap());

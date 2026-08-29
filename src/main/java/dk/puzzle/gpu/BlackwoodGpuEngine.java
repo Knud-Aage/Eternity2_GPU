@@ -11,26 +11,6 @@ import java.util.List;
 
 import static jcuda.driver.JCudaDriver.*;
 
-/**
- * GPU engine for the genuinely faithful Blackwood-native kernel ({@code SolveBlackwoodKernel.cu}
- * / {@code solveBlackwoodDfs}) -- deliberately separate from {@link GpuEngine}, which drives the
- * existing generic-index {@code solvePBP}/{@code solveRepairMode} kernels for the live production
- * pipeline. That class's Blackwood-bias machinery (candidate-order jitter tables biasing a
- * different, generic index) has no role here; mixing this engine's own memory layout and launch
- * cadence into it would add risk to the live pipeline for no reuse benefit.
- *
- * <p>Unlike {@link GpuEngine} (which uploads its constant tables once, in the constructor, since
- * they never change for the life of the engine), this engine's candidate tables are re-uploaded
- * via {@link #uploadTables} once per EPOCH (many {@link #runBlackwoodDfs} calls share one table
- * generation -- see {@code BlackwoodGpuRunner.EPOCH_LAUNCHES}), not once per launch.</p>
- *
- * <p>2026-08-04: each thread's in-progress search state now persists across launches in global
- * memory (the {@code d_persist*} buffers below) instead of being discarded every launch -- a
- * thread's search genuinely continues where it left off. {@link #resetEpoch()} forces every
- * thread back to a fresh attempt, which must happen whenever {@link #uploadTables} rebuilds the
- * candidate tables (a persisted resume cursor into a now-replaced table would be pointing at the
- * wrong candidates otherwise).</p>
- */
 public class BlackwoodGpuEngine {
 
     private static final int MAX_THREADS = 20_000;
@@ -67,8 +47,6 @@ public class BlackwoodGpuEngine {
     private CUdeviceptr d_totalNodes;
     private CUdeviceptr d_threadDepths;
 
-    // Persistent per-thread search state -- survives across launches within one epoch. See the
-    // 2026-08-04 class-level note and SolveBlackwoodKernel.cu's own header comment.
     private CUdeviceptr d_persistBoard;
     private CUdeviceptr d_persistPieceIndexToTryNext;
     private CUdeviceptr d_persistCumulativeBreaks;
@@ -94,9 +72,6 @@ public class BlackwoodGpuEngine {
     private volatile int maxRetreat = 0;
     private volatile int freshFractionPercent = 0;
 
-    // 2026-08-18: opt-in shared-memory caching of the four hot per-step tables -- see
-    // SolveBlackwoodKernel.cu's own header note. Default false preserves existing behaviour
-    // (solvePBP's sibling GpuEngine.lookaheadEnabled is the precedent for this convention).
     private volatile boolean sharedCacheEnabled = false;
 
     public BlackwoodGpuEngine() {
@@ -317,8 +292,6 @@ public class BlackwoodGpuEngine {
 
     /**
      * Uploads a fresh candidate-table set -- call once per batch, before {@link #runBlackwoodDfs}.
-     * Unlike {@link GpuEngine}'s one-time constant uploads, this is meant to be called repeatedly
-     * (once per {@code BlackwoodSolver.prepare()} + {@code BwGpuTables.build()} cycle).
      */
     public void uploadTables(BwGpuTables.GpuTableSet tables) {
         if (tables.payload().length > MAX_PAYLOAD_SIZE) {
@@ -336,8 +309,6 @@ public class BlackwoodGpuEngine {
         uploadConstant("c_bottomRawOffset", tables.bottomRawOffset(), 23L * Sizeof.INT);
         uploadConstant("c_bottomRawCount", tables.bottomRawCount(), 23L * Sizeof.INT);
 
-        // c_bottomRawPayload is a fixed-size __constant__ array (MAX_BOTTOM_PAYLOAD=96 in the
-        // .cu) -- pad the real, shorter payload with zeros rather than uploading a mismatched byte count.
         int[] paddedBottomPayload = Arrays.copyOf(tables.bottomRawPayload(), MAX_BOTTOM_PAYLOAD_SIZE);
         uploadConstant("c_bottomRawPayload", paddedBottomPayload, (long) MAX_BOTTOM_PAYLOAD_SIZE * Sizeof.INT);
 
@@ -354,8 +325,8 @@ public class BlackwoodGpuEngine {
 
     /**
      * Launches one batch: {@code numThreads} threads, each running one full Blackwood attempt
-     * from a fresh step-0 seed (no CPU-supplied partial boards, unlike {@link GpuEngine#runDeepDfs}
-     * -- Blackwood's algorithm always starts fresh). {@code bestBoardOut} is only overwritten if
+     * from a fresh step-0 seed
+     * -- The algorithm always starts fresh). {@code bestBoardOut} is only overwritten if
      * this launch found a new high score or a genuine full solve -- same out-parameter convention
      * as {@code GpuEngine.runDeepDfs}, so check {@code newHighScore > currentHighScore} or
      * {@code solved} before trusting its contents.

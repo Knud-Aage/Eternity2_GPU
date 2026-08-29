@@ -17,13 +17,10 @@ public class JBlackwoodToBucas {
         String outputFile = "records\\TYPEWRITER_LOCKED\\Record_468Pieces.csv";
 
         try {
-            // 1. Load his exact colors from the C# definitions
             int[][] jblackwoodPieces = loadHisPieces(piecesFile);
 
-            // 2. Read his board layout
             String rawBoard = new String(Files.readAllBytes(Paths.get(boardFile)));
 
-            // 3. Convert and generate CSV
             generateCsv(rawBoard, jblackwoodPieces, outputFile);
 
         } catch (Exception e) {
@@ -31,10 +28,6 @@ public class JBlackwoodToBucas {
         }
     }
 
-    /**
-     * Parses the C# Piece objects directly into a 2D Java int array.
-     * Looks for: PieceNumber = X, TopSide = N, RightSide = E, BottomSide = S, LeftSide = W
-     */
     public static int[][] loadHisPieces(String filepath) throws IOException {
         int[][] pieces = new int[256][4];
         List<String> lines = Files.readAllLines(Paths.get(filepath));
@@ -89,7 +82,6 @@ public class JBlackwoodToBucas {
                     int physicalId = Integer.parseInt(parts[0]);
                     int rotation = Integer.parseInt(parts[1]);
 
-                    // Get his base colors
                     int[] baseColors = piecesDb[physicalId - 1];
                     int n = baseColors[0], e = baseColors[1], s = baseColors[2], w = baseColors[3];
 
