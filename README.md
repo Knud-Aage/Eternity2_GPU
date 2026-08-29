@@ -13,13 +13,10 @@ since.
 
 | | |
 |---|---|
-| Best board from this port | **468/480 edges matched (12 conflicts)** |
 | Blackwood's own record (CPU) | 470/480 (10 conflicts) |
 | A perfect solution | 480/480 (0 conflicts) |
 
-Reaching 12 conflicts took roughly 7 hours on one RTX-class GPU at 16384 threads. Boards in the
-13–15 conflict range appear regularly; 12 is rare. This port has not beaten Blackwood's own
-record, and the gap from 12 to a solution is not a matter of more compute — see
+The effort to reach a solution is not merely a matter of more compute — see
 [eternity2.dev on why a faster computer doesn't help](https://eternity2.dev/research/why/prune-vs-speed/).
 
 ## Requirements
