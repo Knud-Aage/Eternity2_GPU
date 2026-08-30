@@ -57,7 +57,7 @@ All optional, all environment variables:
 |---|---|---|
 | `ETERNITY_GPU_NUM_THREADS` | `1024` | Independent DFS searches. **16384 measured best** at production scale; the default is conservative. |
 | `ETERNITY_GPU_SOLUTIONS_DIR` | `~/EternitySolutions_GPU` | Where boards are saved. |
-| `ETERNITY_GPU_SEEDING` | enabled | `false` starts every attempt from a random corner instead of resuming saved boards. |
+| `ETERNITY_GPU_SEEDING` | **disabled** | `true` resumes attempts from saved boards instead of starting every one from a random corner (see below). |
 | `ETERNITY_GPU_SEED_SAMPLING` | enabled | `false` picks the seed pool as a strict top-K by depth. Enabled, it draws the pool by depth-weighted random sampling, so restarts don't all resume from the identical elite boards (see below). |
 | `ETERNITY_GPU_FRESH_FRACTION` | `40` | Percent of attempts that ignore seeds and start from a random corner. The explore/exploit dial (see below). |
 | `ETERNITY_GPU_MAX_RETREAT` | `100` | How far back from a seed's tip a resuming thread may pull. Drawn uniformly in `[0, N]`, so the mean pull-back is `N/2` (see below). |
@@ -112,37 +112,44 @@ Two things make it work on a GPU:
 Search state resets only at *epoch* boundaries (`EPOCH_LAUNCHES`, default 20,000), when candidate
 tables are rebuilt and re-randomised.
 
-### Seed diversity
+### Seeding is off by default
 
-Resuming from saved boards is what lets the search start at the frontier instead of re-deriving 250
-pieces of known progress — but it also means the search keeps working the neighbourhoods of boards
-it already has. Left unchecked that dominates the output: with duplicate suppression persisted
-across runs, the measured repeat rate was **80%** — over 352 launches, 10 boards cleared the
-conflict threshold and 8 of them were boards found in earlier runs.
+Resuming attempts from saved boards lets the search start at the frontier instead of re-deriving
+250 pieces of known progress — but the project's own A/B testing found that, however that resuming
+is tuned, it never once produced a board better than what was already in the seed pool. A
+[`BlackwoodGpuFreshFractionHarness`](../Eternity/src/test/java/dk/puzzle/blackwood/BlackwoodGpuFreshFractionHarness.java)
+run (4 arms x 180s, identical 59-board seed pool) found best-board results tied across 0/25/50%
+fresh-start mixing (all 13) with median quality degrading monotonically as more exploration was
+mixed in; a separate retreat distance A/B found the same shape — perturbing further from a seed
+made results more diverse and *worse*, never better. That is the signature of a narrow local
+optimum: reliable at reproducing what is already known, never observed to exceed it. It matches
+Blackwood's own account of his 470/480 record — a month of continuous, unseeded random-restart
+search on one PC, his own word for it "luck," not refinement of a near-miss.
 
-Three mechanisms keep that in check:
+Over a short horizon seeded search does clearly win (the same harness measured unseeded's best at
+18 against seeded's 13, since a cold start can't climb to competitive depth in 180 seconds), so
+this is a bet on where the ceiling is, not a claim that seeding is worthless. If the goal is a
+steady stream of already-known-quality boards, re-enable it. If the goal is finding something past
+what the pool already has, exploiting a peak that has never yielded anything better is the wrong
+tool regardless of how well the exploitation is tuned.
+
+Set `ETERNITY_GPU_SEEDING=true` to resume the old behaviour. Three things exist to make seeded runs
+less repetitive if you do:
 
 - **Persistent duplicate suppression.** Completed boards are fingerprinted (SHA-256 of the bucas
   encoding) into `.saved_completed_boards` in the output directory, so a board found in an earlier
   run is not saved or uploaded again. Deduping on the *completed* board matters: two different
-  partial boards in one lineage can complete to the identical 256-piece result.
-- **Depth-weighted seed sampling.** The pool is drawn by weighted random sampling rather than a
-  strict top-K, so each run resumes from a different slice. Deep boards still dominate — at the
-  default bias a 253-piece board is ~729x likelier to be drawn than a 245 — but the pool is no
-  longer a fixed function of what happens to be on disk.
-- **A fresh fraction.** `ETERNITY_GPU_FRESH_FRACTION` percent of attempts ignore seeds entirely and
-  start from a random corner. This is the explore/exploit dial. Raising it lowers mean depth per
-  launch (fresh attempts climb from zero) and can reduce total saves, in exchange for territory the
-  seeds cannot reach. Judge it on the ratio of new boards to suppressed duplicates in the log, not
-  on save volume.
-
-`ETERNITY_GPU_MAX_RETREAT` is the same dial at finer grain: a resuming thread pulls back a uniform
-`[0, N]` steps from its seed's tip, so the mean is `N/2`. At the default 100, a thread resuming a
-depth-250 board typically restarts near depth 200 — inheriting ~200 of 250 pieces and re-searching
-only the tail. That is local search around a board already known, which is worth little if good
-boards are isolated peaks rather than clustered. A fresh start is this taken to its limit, so the
-two settings pull the same way; move one at a time if you want the duplicate ratio to stay
-attributable.
+  partial boards in one lineage can complete to the identical 256-piece result. With this measuring
+  it for the first time, the actual repeat rate turned out to be **80%** — over 352 launches, 10
+  boards cleared the conflict threshold and 8 were boards already found in earlier runs.
+- **Depth-weighted seed sampling** (`ETERNITY_GPU_SEED_SAMPLING`, on by default *within* seeded
+  mode). The pool is drawn by weighted random sampling rather than a strict top-K, so each run
+  resumes from a different slice instead of the identical elite boards every time.
+- **`ETERNITY_GPU_FRESH_FRACTION` and `ETERNITY_GPU_MAX_RETREAT`.** Percent of attempts starting
+  fresh, and how far a resuming thread pulls back from its seed's tip (drawn uniformly in `[0, N]`,
+  so the mean pull-back is `N/2`). These are exactly the dials the A/B above already swept — raising
+  them did not find better boards, only worse medians at an unchanged best. Don't raise either to
+  fight the duplicate rate expecting it to surface something new; the evidence above says it won't.
 
 ### Break schedule
 

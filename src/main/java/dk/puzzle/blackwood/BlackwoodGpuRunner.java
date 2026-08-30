@@ -126,17 +126,52 @@ public class BlackwoodGpuRunner {
     // became measurable for the first time, and it was 80%: over 352 launches, 10 boards cleared the
     // conflict threshold and 8 were boards already found in earlier runs. At 10% fresh, ~90% of
     // 16384 threads were re-mining seed neighbourhoods that the numbers say are largely exhausted.
-    // This is an explore/exploit dial, not a correctness one -- the seeded majority still holds the
-    // frontier, this just stops nearly all capacity going to ground that repeats itself. Watch the
-    // ratio of "SAVED" to "already saved" lines in the log to judge whether 40 is the right level;
-    // src/test/.../BlackwoodGpuFreshFractionHarness.java (main Eternity repo) measures it properly.
+    // Raised to 40 on that reasoning alone, without first reading the A/B that already existed for
+    // this exact question -- corrected below. src/test/.../BlackwoodGpuFreshFractionHarness.java
+    // (main Eternity repo), 2026-08-18, 4 arms x 180s x 1024 threads, identical 59-board seed pool:
+    //     fresh%   novel   bestConf   medConf
+    //          0      44         13        14
+    //         25     203         13        17
+    //         50     326         13        19
+    //        100     684         18        20
+    // 0/25/50 all TIE on best board found (13); median quality degrades monotonically as fresh%
+    // rises; no arm ever beat the seed pool's own existing best (12). Raising this dial does not
+    // buy access to better boards, only a worse median at equal best -- moot now that SEEDING_ENABLED
+    // defaults to off, but if seeding is re-enabled, do not raise this without a reason beyond
+    // "fight the duplicate rate": this A/B already shows that particular fix doesn't work.
     private static final int FRESH_FRACTION_PERCENT =
             parseIntEnv("ETERNITY_GPU_FRESH_FRACTION", 40);
     // Candidates to score before ranking. Scoring runs HoleSolver once per board (~1s each), and
     // only at an epoch boundary, so this bounds a startup cost rather than a per-launch one.
     private static final int MAX_SEED_CANDIDATES = 120;
+    // Default flipped to OFF 2026-08-30, on Blackwood's own authority: the landscape is narrow
+    // enough that good boards are isolated peaks, not clustered, so resuming near one and
+    // re-searching its tail is local search around a peak -- which his experience says does not
+    // pay off (his 470 was a month of continuous pure random-restart search, his own word for it
+    // "luck", not refinement of a near-miss).
+    //
+    // That call is better supported than it first looks, by evidence already in this file that
+    // went unread before two same-day mistakes: raising FRESH_FRACTION_PERCENT to fight the
+    // duplicate rate, and starting an isolated equal-condition seeded-vs-unseeded A/B instead of
+    // just checking here first. See FRESH_FRACTION_PERCENT's own comment for the numbers: over a
+    // short horizon (180s) seeded search clearly wins (best 13 vs unseeded's 18) -- so this is not
+    // "unseeded is simply better" -- but no amount of retreat or fresh-fraction tuning WITHIN
+    // seeded search, however mixed, ever beat the seed pool's own pre-existing best (12). Retreat
+    // A/Bs found the same shape: perturbing away from a seed makes results more diverse and worse,
+    // never better. That is the actual signature of a narrow local optimum: reliable at reproducing
+    // what you already have, never observed to find something past it. If the goal is repeating
+    // known-good results quickly, seeded wins; if the goal is 471, exploiting a peak that has never
+    // once yielded anything better is the wrong tool, however well the exploitation is tuned.
+    //
+    // A separate historical Aug 18-22 stretch of mostly-unseeded running (suggestive, not
+    // conclusive: seeded got ~30 minutes total against several days unseeded, both at 1024 threads
+    // not this file's 16384) is corroborating at best, not the basis for this change.
+    //
+    // Re-enable with ETERNITY_GPU_SEEDING=true. If re-enabling because duplicate saves seem
+    // wasteful, read the FRESH_FRACTION_PERCENT comment first -- that specific fix was already
+    // tried, on this exact question, and it did not work.
     private static final boolean SEEDING_ENABLED =
-            !"false".equalsIgnoreCase(System.getenv("ETERNITY_GPU_SEEDING"));
+            "true".equalsIgnoreCase(System.getenv("ETERNITY_GPU_SEEDING"));
     // Draw the seed pool by depth-weighted random sampling rather than a strict top-K by depth.
     // Strict top-K made the pool a pure function of what was on disk, so every restart resumed from
     // the same elite boards: of 18 saved 12-conflict boards, only 9 were distinct, and every
