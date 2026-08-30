@@ -58,6 +58,8 @@ All optional, all environment variables:
 | `ETERNITY_GPU_NUM_THREADS` | `1024` | Independent DFS searches. **16384 measured best** at production scale; the default is conservative. |
 | `ETERNITY_GPU_SOLUTIONS_DIR` | `~/EternitySolutions_GPU` | Where boards are saved. |
 | `ETERNITY_GPU_SEEDING` | enabled | `false` starts every attempt from a random corner instead of resuming saved boards. |
+| `ETERNITY_GPU_SEED_SAMPLING` | enabled | `false` picks the seed pool as a strict top-K by depth. Enabled, it draws the pool by depth-weighted random sampling, so restarts don't all resume from the identical elite boards (see below). |
+| `ETERNITY_GPU_FRESH_FRACTION` | `40` | Percent of attempts that ignore seeds and start from a random corner. The explore/exploit dial (see below). |
 | `ETERNITY_GPU_SHARED_CACHE` | enabled | `false` reads the four hot per-step tables from `__constant__` rather than a `__shared__` copy. |
 | `ETERNITY_NODE_CAP` | `50000000000` | Nodes before a CPU-side attempt restarts. Blackwood's own value; 25B/50B/100B measured indistinguishable. |
 | `ETERNITY_DRIVE_UPLOAD` | enabled | `false` disables Google Drive mirroring (see below). |
@@ -108,6 +110,30 @@ Two things make it work on a GPU:
 
 Search state resets only at *epoch* boundaries (`EPOCH_LAUNCHES`, default 20,000), when candidate
 tables are rebuilt and re-randomised.
+
+### Seed diversity
+
+Resuming from saved boards is what lets the search start at the frontier instead of re-deriving 250
+pieces of known progress — but it also means the search keeps working the neighbourhoods of boards
+it already has. Left unchecked that dominates the output: with duplicate suppression persisted
+across runs, the measured repeat rate was **80%** — over 352 launches, 10 boards cleared the
+conflict threshold and 8 of them were boards found in earlier runs.
+
+Three mechanisms keep that in check:
+
+- **Persistent duplicate suppression.** Completed boards are fingerprinted (SHA-256 of the bucas
+  encoding) into `.saved_completed_boards` in the output directory, so a board found in an earlier
+  run is not saved or uploaded again. Deduping on the *completed* board matters: two different
+  partial boards in one lineage can complete to the identical 256-piece result.
+- **Depth-weighted seed sampling.** The pool is drawn by weighted random sampling rather than a
+  strict top-K, so each run resumes from a different slice. Deep boards still dominate — at the
+  default bias a 253-piece board is ~729x likelier to be drawn than a 245 — but the pool is no
+  longer a fixed function of what happens to be on disk.
+- **A fresh fraction.** `ETERNITY_GPU_FRESH_FRACTION` percent of attempts ignore seeds entirely and
+  start from a random corner. This is the explore/exploit dial. Raising it lowers mean depth per
+  launch (fresh attempts climb from zero) and can reduce total saves, in exchange for territory the
+  seeds cannot reach. Judge it on the ratio of new boards to suppressed duplicates in the log, not
+  on save volume.
 
 ### Break schedule
 

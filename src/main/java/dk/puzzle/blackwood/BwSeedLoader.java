@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Random;
 
 /**
  * Loads previously saved deep boards and converts them into the step-ordered form the GPU kernel
@@ -56,7 +57,26 @@ public final class BwSeedLoader {
     private static final java.util.regex.Pattern BASEBOARD_NAME =
             java.util.regex.Pattern.compile("^Errors\\d+_Base(\\d+)_.*_baseboard\\.txt$");
 
+    /**
+     * Deterministic selection: the {@code maxSeeds} deepest boards. Kept for the measurement
+     * harnesses, which need a fixed pool to compare runs against.
+     */
     public static List<Seed> load(List<Path> dirs, int minDepth, int maxSeeds, int[] stepBoardIdx) {
+        return load(dirs, minDepth, maxSeeds, stepBoardIdx, null);
+    }
+
+    /**
+     * As {@link #load(List, int, int, int[])}, but when {@code rand} is non-null the pool is drawn
+     * by depth-weighted random sampling instead of taking a strict top-{@code maxSeeds}.
+     *
+     * <p>Strict top-K makes the pool a pure function of what is on disk, so every process restart
+     * resumed from the identical elite boards and re-mined neighbourhoods already exhausted. That
+     * showed up directly in the results: of 18 saved 12-conflict boards, only 9 were distinct, and
+     * every duplicate spanned a restart. Sampling gives each run a different slice of the candidate
+     * pool while still strongly favouring deep boards.</p>
+     */
+    public static List<Seed> load(List<Path> dirs, int minDepth, int maxSeeds, int[] stepBoardIdx,
+                                  Random rand) {
         List<Seed> seeds = new ArrayList<>();
         for (Path dir : dirs) {
             if (!Files.isDirectory(dir)) {
@@ -81,8 +101,50 @@ public final class BwSeedLoader {
             if (loadedHere > 0) logger.info("Loaded {} candidate seed board(s) from {}", loadedHere, dir);
         }
 
-        seeds.sort(Comparator.comparingInt(Seed::depth).reversed());
-        return seeds.size() > maxSeeds ? new ArrayList<>(seeds.subList(0, maxSeeds)) : seeds;
+        if (seeds.size() <= maxSeeds) {
+            seeds.sort(Comparator.comparingInt(Seed::depth).reversed());
+            return seeds;
+        }
+        if (rand == null) {
+            seeds.sort(Comparator.comparingInt(Seed::depth).reversed());
+            return new ArrayList<>(seeds.subList(0, maxSeeds));
+        }
+        return sampleWeightedByDepth(seeds, minDepth, maxSeeds, rand);
+    }
+
+    /**
+     * Exponent applied to a board's depth advantage when weighting it for selection. At the default
+     * of 3 and a 245 floor, a 253-piece board is {@code 9^3 = 729} times likelier to be drawn than a
+     * 245-piece one -- deep boards still dominate the pool, but the pool is no longer the same set
+     * on every restart.
+     */
+    private static final double DEPTH_BIAS_EXPONENT = 3.0;
+
+    /**
+     * Weighted sampling without replacement, Efraimidis-Spirakis: draw {@code key = ln(U) / weight}
+     * per item and keep the largest {@code maxSeeds} keys. Using the log form rather than
+     * {@code U^(1/weight)} keeps it numerically stable at the large weights the exponent produces.
+     */
+    static List<Seed> sampleWeightedByDepth(List<Seed> seeds, int minDepth, int maxSeeds,
+                                            Random rand) {
+        record Keyed(double key, Seed seed) {
+        }
+        List<Keyed> keyed = new ArrayList<>(seeds.size());
+        for (Seed seed : seeds) {
+            double weight = Math.pow(seed.depth() - minDepth + 1, DEPTH_BIAS_EXPONENT);
+            // nextDouble() can return exactly 0.0; ln(0) would be -inf and permanently sink the item.
+            double u = rand.nextDouble();
+            if (u <= 0.0) u = Double.MIN_VALUE;
+            keyed.add(new Keyed(Math.log(u) / weight, seed));
+        }
+        keyed.sort(Comparator.comparingDouble(Keyed::key).reversed());
+
+        List<Seed> picked = new ArrayList<>(maxSeeds);
+        for (int i = 0; i < maxSeeds; i++) {
+            picked.add(keyed.get(i).seed());
+        }
+        picked.sort(Comparator.comparingInt(Seed::depth).reversed());
+        return picked;
     }
 
     /** -1 for anything not in one of the two Blackwood-numbered conventions -- see LEGACY_NAME/BASEBOARD_NAME. */

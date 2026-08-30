@@ -107,12 +107,28 @@ public class BlackwoodGpuRunner {
     // also lets threads explore alternatives that branch off well below the tip.
     private static final int MAX_RETREAT = 100;
     // Percentage of attempts that ignore the seeds and start from a random corner.
-    private static final int FRESH_FRACTION_PERCENT = 10;
+    //
+    // Raised 10 -> 40 on 2026-08-30. With persistent duplicate suppression in place the repeat rate
+    // became measurable for the first time, and it was 80%: over 352 launches, 10 boards cleared the
+    // conflict threshold and 8 were boards already found in earlier runs. At 10% fresh, ~90% of
+    // 16384 threads were re-mining seed neighbourhoods that the numbers say are largely exhausted.
+    // This is an explore/exploit dial, not a correctness one -- the seeded majority still holds the
+    // frontier, this just stops nearly all capacity going to ground that repeats itself. Watch the
+    // ratio of "SAVED" to "already saved" lines in the log to judge whether 40 is the right level;
+    // src/test/.../BlackwoodGpuFreshFractionHarness.java (main Eternity repo) measures it properly.
+    private static final int FRESH_FRACTION_PERCENT =
+            parseIntEnv("ETERNITY_GPU_FRESH_FRACTION", 40);
     // Candidates to score before ranking. Scoring runs HoleSolver once per board (~1s each), and
     // only at an epoch boundary, so this bounds a startup cost rather than a per-launch one.
     private static final int MAX_SEED_CANDIDATES = 120;
     private static final boolean SEEDING_ENABLED =
             !"false".equalsIgnoreCase(System.getenv("ETERNITY_GPU_SEEDING"));
+    // Draw the seed pool by depth-weighted random sampling rather than a strict top-K by depth.
+    // Strict top-K made the pool a pure function of what was on disk, so every restart resumed from
+    // the same elite boards: of 18 saved 12-conflict boards, only 9 were distinct, and every
+    // duplicate spanned a restart. `false` restores the old deterministic selection for A/B.
+    private static final boolean SEED_SAMPLING_ENABLED =
+            !"false".equalsIgnoreCase(System.getenv("ETERNITY_GPU_SEED_SAMPLING"));
     private static final boolean SHARED_CACHE_ENABLED =
             !"false".equalsIgnoreCase(System.getenv("ETERNITY_GPU_SHARED_CACHE"));
 
@@ -154,8 +170,17 @@ public class BlackwoodGpuRunner {
      * filter completed to a board byte-identical to the existing 12-conflict record. Deduping on
      * the COMPLETED board is the level that actually matters, since that is what gets saved,
      * compared, and reported.</p>
+     *
+     * <p>Persisted to {@link #SAVED_BOARDS_INDEX} in the output directory, because being
+     * in-memory-only made it useless across restarts -- the exact case that matters here, since the
+     * process restarts on every driver TDR. Of 18 saved 12-conflict boards, only 9 were distinct
+     * and every duplicate spanned a restart. Kept as hex SHA-256 of the bucas link rather than the
+     * link itself: 64 bytes per board instead of ~1.5 KB, and the file never needs to be read by a
+     * human.</p>
      */
     private static final Set<String> savedCompletedBoards = new HashSet<>();
+    /** One hex SHA-256 per line, appended as boards are saved. */
+    private static final String SAVED_BOARDS_INDEX = ".saved_completed_boards";
 
     public static void main(String[] args) throws Exception {
         String configuredDir = System.getenv("ETERNITY_GPU_SOLUTIONS_DIR");
@@ -179,6 +204,7 @@ public class BlackwoodGpuRunner {
         long launchCounter = 0;
         int currentHighScore = scanExistingHighScore(outputDir);
         long stepBudget = INITIAL_STEP_BUDGET;
+        loadSavedBoardIndex(outputDir);
 
         logger.info("BlackwoodGpuRunner starting. numThreads={}, initialStepBudget={}, saveThreshold={}, epochLaunches={}, resumedHighScore={}, seedingEnabled={}, sharedCacheEnabled={}, breakIndexesAllowed={}",
                 NUM_THREADS, INITIAL_STEP_BUDGET, SAVE_THRESHOLD, EPOCH_LAUNCHES, currentHighScore, SEEDING_ENABLED, SHARED_CACHE_ENABLED,
@@ -256,6 +282,53 @@ public class BlackwoodGpuRunner {
      * format (see {@link BwSeedLoader}). Failure here is never fatal: with no seeds the kernel just
      * starts from random corners as it always did.
      */
+    private static String sha256Hex(String s) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+            }
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e); // every JRE ships it
+        }
+    }
+
+    /**
+     * Repopulates {@link #savedCompletedBoards} from disk so boards found in an earlier run are not
+     * saved and uploaded again. A missing or unreadable index is not fatal -- it just means this run
+     * starts with no memory, which is exactly the old behaviour.
+     */
+    private static void loadSavedBoardIndex(Path outputDir) {
+        Path index = outputDir.resolve(SAVED_BOARDS_INDEX);
+        if (!Files.isRegularFile(index)) {
+            logger.info("No saved-board index at {} yet; duplicate suppression starts empty", index);
+            return;
+        }
+        try {
+            List<String> lines = Files.readAllLines(index);
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (!trimmed.isEmpty()) savedCompletedBoards.add(trimmed);
+            }
+            logger.info("Loaded {} previously saved board fingerprint(s) from {}", savedCompletedBoards.size(), index);
+        } catch (IOException e) {
+            logger.warn("Could not read saved-board index {}; duplicate suppression starts empty", index, e);
+        }
+    }
+
+    /** Never fatal: failing to record a fingerprint costs a future duplicate, not the saved board. */
+    private static void appendSavedBoardHash(Path outputDir, String hash) {
+        try {
+            Files.writeString(outputDir.resolve(SAVED_BOARDS_INDEX), hash + System.lineSeparator(),
+                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            logger.warn("Could not append to saved-board index; this board may be re-saved after a restart", e);
+        }
+    }
+
     private static void loadSeeds(BlackwoodGpuEngine engine, int[] stepBoardIdx, Path gpuOutputDir,
                                   PieceInventory inventory) {
         try {
@@ -269,8 +342,9 @@ public class BlackwoodGpuRunner {
                                                                     // at ~/Documents -- that path never
                                                                     // existed; fixed 2026-08-30)
 
-            List<BwSeedLoader.Seed> candidates =
-                    BwSeedLoader.load(dirs, MIN_SEED_DEPTH, MAX_SEED_CANDIDATES, stepBoardIdx);
+            List<BwSeedLoader.Seed> candidates = BwSeedLoader.load(dirs, MIN_SEED_DEPTH,
+                    MAX_SEED_CANDIDATES, stepBoardIdx,
+                    SEED_SAMPLING_ENABLED ? new java.util.Random() : null);
             if (candidates.isEmpty()) {
                 logger.info("No seed boards at depth >= {} found; threads will start from random corners", MIN_SEED_DEPTH);
                 engine.uploadSeeds(List.of(), new int[0], 0, 0);
@@ -294,10 +368,13 @@ public class BlackwoodGpuRunner {
 
             BwSeedLoader.Seed best = seeds.get(0);
             BwSeedLoader.Seed worst = seeds.get(seeds.size() - 1);
-            logger.info("Seeding from {} of {} candidate board(s): conflicts {}..{}, best is {} pieces -> {} conflicts ({}). maxRetreat={}, freshFraction={}%",
+            int shallowestSeed = seeds.stream().mapToInt(BwSeedLoader.Seed::depth).min().orElse(-1);
+            int deepestSeed = seeds.stream().mapToInt(BwSeedLoader.Seed::depth).max().orElse(-1);
+            logger.info("Seeding from {} of {} candidate board(s): conflicts {}..{}, depth {}..{}, best is {} pieces -> {} conflicts ({}). sampling={}, maxRetreat={}, freshFraction={}%",
                     seeds.size(), candidates.size(), best.conflicts(), worst.conflicts(),
+                    shallowestSeed, deepestSeed,
                     best.depth(), best.conflicts(), best.source().getFileName(),
-                    MAX_RETREAT, FRESH_FRACTION_PERCENT);
+                    SEED_SAMPLING_ENABLED, MAX_RETREAT, FRESH_FRACTION_PERCENT);
         } catch (Exception e) {
             logger.warn("Seed loading failed; continuing without seeds", e);
             try {
@@ -496,10 +573,13 @@ public class BlackwoodGpuRunner {
             // also the real, playable link for the COMPLETED board -- distinct from the partial-board
             // `link` computed above, which still has holes and is only an intermediate value here.
             String completedLink = dk.puzzle.io.BucasExporter.exportBoard(completed);
-            if (!savedCompletedBoards.add(completedLink)) {
-                logger.debug("Completed board at {} conflicts already saved, skipping duplicate", conflicts);
+            String boardHash = sha256Hex(completedLink);
+            if (!savedCompletedBoards.add(boardHash)) {
+                logger.info("Completed board at {} conflicts already saved (possibly in an earlier run), skipping duplicate",
+                        conflicts);
                 return conflicts;
             }
+            appendSavedBoardHash(outputDir, boardHash);
 
             Files.createDirectories(outputDir);
             String timeId = LocalTime.now().format(DateTimeFormatter.ofPattern("HHmmss_SSS"));
