@@ -160,7 +160,7 @@ public class BlackwoodGpuRunner {
     public static void main(String[] args) throws Exception {
         String configuredDir = System.getenv("ETERNITY_GPU_SOLUTIONS_DIR");
         Path outputDir = (configuredDir == null || configuredDir.isBlank())
-                ? Path.of(System.getProperty("user.home"), "EternitySolutions_GpuBlackwood")
+                ? Path.of(System.getProperty("user.home"), "EternitySolutions_GPU")
                 : Path.of(configuredDir);
 
         BlackwoodSolver solver = new BlackwoodSolver(SAVE_THRESHOLD, outputDir, 1, PIECES_PATH);
@@ -262,9 +262,12 @@ public class BlackwoodGpuRunner {
             Path home = Path.of(System.getProperty("user.home"));
             List<Path> dirs = List.of(
                     gpuOutputDir,
-                    home.resolve("EternitySolutions"),             // C# solver
-                    home.resolve("EternitySolutions_drop239"),     // C# solver, tuned break schedule
-                    home.resolve("Documents").resolve("EternitySolutions_JavaPort"));
+                    home.resolve("EternitySolutions_CSharpCPU"),   // C# solver (was split across
+                                                                    // EternitySolutions + _drop239;
+                                                                    // consolidated 2026-08-30)
+                    home.resolve("EternitySolutions_JavaCPU"));    // Java CPU port (was wrongly pointed
+                                                                    // at ~/Documents -- that path never
+                                                                    // existed; fixed 2026-08-30)
 
             List<BwSeedLoader.Seed> candidates =
                     BwSeedLoader.load(dirs, MIN_SEED_DEPTH, MAX_SEED_CANDIDATES, stepBoardIdx);

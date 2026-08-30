@@ -46,7 +46,7 @@ or, once built, directly:
 java -cp "target/classes;$(cat cp.txt)" dk.puzzle.blackwood.BlackwoodGpuRunner
 ```
 
-Saved boards land in `~/EternitySolutions_GpuBlackwood/` as three files per board: a bucas-linked
+Saved boards land in `~/EternitySolutions_GPU/` as three files per board: a bucas-linked
 raw board, a physical piece layout, and a Blackwood-numbered baseboard usable as a future seed.
 
 ## Configuration
@@ -56,7 +56,7 @@ All optional, all environment variables:
 | Variable | Default | Effect |
 |---|---|---|
 | `ETERNITY_GPU_NUM_THREADS` | `1024` | Independent DFS searches. **16384 measured best** at production scale; the default is conservative. |
-| `ETERNITY_GPU_SOLUTIONS_DIR` | `~/EternitySolutions_GpuBlackwood` | Where boards are saved. |
+| `ETERNITY_GPU_SOLUTIONS_DIR` | `~/EternitySolutions_GPU` | Where boards are saved. |
 | `ETERNITY_GPU_SEEDING` | enabled | `false` starts every attempt from a random corner instead of resuming saved boards. |
 | `ETERNITY_GPU_SHARED_CACHE` | enabled | `false` reads the four hot per-step tables from `__constant__` rather than a `__shared__` copy. |
 | `ETERNITY_NODE_CAP` | `50000000000` | Nodes before a CPU-side attempt restarts. Blackwood's own value; 25B/50B/100B measured indistinguishable. |

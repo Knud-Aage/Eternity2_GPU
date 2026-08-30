@@ -90,7 +90,7 @@ public class BlackwoodSolver {
     }
 
     private static Path defaultOutputDir() {
-        return Path.of(System.getProperty("user.home"), "EternitySolutions_JavaPort");
+        return Path.of(System.getProperty("user.home"), "EternitySolutions_JavaCPU");
     }
 
     private static int defaultWorkerCount() {
