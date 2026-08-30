@@ -19,7 +19,17 @@ public final class BwUtil {
 
     public static final int[] SIDE_EDGES = {1, 5, 9, 13, 17};
     public static final int[] HEURISTIC_SIDES = {13, 16, 10};
-    public static final int[] BREAK_INDEXES_ALLOWED = {201, 206, 211, 216, 221, 225, 229, 233, 237};
+    // Blackwood's original 10-entry schedule. The 239 entry was dropped 2026-08-2x on the theory
+    // that allowing 10 breaks capped the best possible result at 470 -- that was wrong, and it was
+    // restored 2026-08-30. The array is a per-depth CEILING, not a quota: nothing obliges the search
+    // to spend its allowance, and candidates are scored `score - 100000 * breakCount`, so break-free
+    // placements are tried first at every step and a break is taken only when the search is stuck.
+    // A 10-break-allowed run that finishes on 9 breaks is 471, perfectly legally. Dropping 239 also
+    // cost reachability outright: getBreakArray() counts entries <= i, so the 9- and 10-entry arrays
+    // are IDENTICAL below depth 239 and the 10-entry one is strictly more permissive above it --
+    // i.e. the 10-break search tree is a superset. A leave-one-out sweep had already measured that
+    // 9-break configurations reach depth 248 far more rarely, which was the price paid for nothing.
+    public static final int[] BREAK_INDEXES_ALLOWED = {201, 206, 211, 216, 221, 225, 229, 233, 237, 239};
     public static final int MAX_HEURISTIC_INDEX = 160;
 
     public static final int[] BLACKWOOD_TO_THESIL = {

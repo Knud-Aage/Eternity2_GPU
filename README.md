@@ -111,17 +111,25 @@ tables are rebuilt and re-randomised.
 
 ### Break schedule
 
-`BwUtil.BREAK_INDEXES_ALLOWED` is a cumulative budget: mismatches are forbidden below depth 201,
-and one more becomes permitted at each listed depth. Its length is the maximum final conflict
-count reachable. This port ships a 9-entry schedule:
+`BwUtil.BREAK_INDEXES_ALLOWED` is a cumulative per-depth **ceiling**: mismatches are forbidden
+below depth 201, and one more becomes permitted at each listed depth. This port ships Blackwood's
+original 10-entry schedule:
 
 ```
-201, 206, 211, 216, 221, 225, 229, 233, 237
+201, 206, 211, 216, 221, 225, 229, 233, 237, 239
 ```
 
-9 rather than Blackwood's 10 because 471/480 (9 conflicts) requires it: a search granted 10
-breaks can spend all 10, so its best possible product is 470. The cost is real — a leave-one-out
-sweep found 9-break configurations reach depth 248 far more rarely than 10-break.
+It is a ceiling, not a quota — nothing obliges the search to spend its allowance, and candidates
+are scored `score - 100000 * breakCount`, so break-free placements are always tried first and a
+break is taken only when the search is otherwise stuck. A run allowed 10 breaks that finishes on
+9 is a 471/480.
+
+This port briefly dropped the 239 entry, on the theory that allowing 10 breaks capped the best
+possible result at 470. That was wrong, and it also cost reachability rather than trading it:
+because the array counts entries `<= i`, the 9- and 10-entry schedules are identical at every
+depth below 239 and the 10-entry one is strictly more permissive above it, so the 10-break search
+tree is a *superset*. A leave-one-out sweep had measured the 9-entry variant reaching depth 248
+about 70x more rarely (0.2% vs 14.1%).
 
 ## Layout
 

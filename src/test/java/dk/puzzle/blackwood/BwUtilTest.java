@@ -156,9 +156,11 @@ class BwUtilTest {
         assertEquals(8, arr[233]);
         assertEquals(9, arr[237]);
         // Tracks BwUtil.BREAK_INDEXES_ALLOWED -- update whenever that schedule changes.
-        // Currently 9-break (239 dropped), so the budget tops out at 9, not 10.
-        assertEquals(9, arr[239]);
-        assertEquals(9, arr[255]);
+        // Blackwood's original 10-break schedule: the 10th break unlocks at 239 and the budget
+        // then tops out at 10. (239 was briefly dropped 2026-08-24, restored 2026-08-30 -- see
+        // the write-up on BREAK_INDEXES_ALLOWED.)
+        assertEquals(10, arr[239]);
+        assertEquals(10, arr[255]);
     }
 
     @Test
