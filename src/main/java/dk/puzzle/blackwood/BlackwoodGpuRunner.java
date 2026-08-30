@@ -51,6 +51,15 @@ public class BlackwoodGpuRunner {
     // output to get one dedicated file right.
     private static final Path COMPLETED_LINKS_LOG = Path.of("logs", "gpu_completed_links.log");
     private static final int SAVE_THRESHOLD = 190; // matches BlackwoodSolver's own default, for direct comparability
+    // Save/retention window is normally "within 1 of best-on-disk", which tightens every time the
+    // record improves -- fine near 471, but on the way there it means every future 12 (already a
+    // rare result on its own, see README) stops being saved/uploaded/kept the moment anything ever
+    // beats it, however far off that might be. This floor keeps <=12 permanently save-worthy no
+    // matter how much better bestOnDisk gets, so results stay visible instead of thinning out over
+    // time. Applied in both evaluateAndMaybeSave (the save gate) and pruneAboveThreshold (local
+    // retention) -- see both. Mirror any change here in BlackwoodSolver.java (this repo and the CPU
+    // one) and Util.cs's PruneAboveThreshold.
+    private static final int ALWAYS_SAVE_AT_OR_BELOW = parseIntEnv("ETERNITY_SAVE_FLOOR", 12);
     // 2026-08-17, measured (BlackwoodGpuBreadthDepthHarness): 16384 was chosen for SM saturation --
     // i.e. for raw node throughput -- but throughput turns out to be nearly irrelevant to the metric
     // that matters. At equal wall-clock, 16384 threads searched 47.5 BILLION nodes and 64 threads
@@ -64,7 +73,14 @@ public class BlackwoodGpuRunner {
     // *favouring* fewer threads (151.6 at 64 vs 137.9 at 1024). A same-day quality harness scoring
     // actual post-HoleSolver conflicts found no comparably large effect, but on too small a sample
     // (18-56 boards) to rule one out. Overridable so a real overnight run can test it properly.
-    private static final int NUM_THREADS = parseIntEnv("ETERNITY_GPU_NUM_THREADS", 1024);
+    private static final int NUM_THREADS_DEFAULT = 1024;
+    private static final int NUM_THREADS = parseIntEnv("ETERNITY_GPU_NUM_THREADS", NUM_THREADS_DEFAULT);
+    // True only when ETERNITY_GPU_NUM_THREADS came from the environment. A launch that bypasses
+    // run-gpu.cmd (e.g. invoking `java -cp ...` directly, as when restarting from an inspected
+    // process command line, which shows arguments but never env vars) silently falls back to the
+    // conservative NUM_THREADS_DEFAULT instead of the production-tuned 16384 -- see the startup
+    // warning below, added after exactly that happened.
+    private static final boolean NUM_THREADS_EXPLICIT = isEnvSet("ETERNITY_GPU_NUM_THREADS");
     // 2026-08-18, measured (BlackwoodGpuTdrCeilingHarness): a single launch survived cleanly up to
     // 171,261 ms (stepBudget=25,600,000) with no CUDA/TDR failure -- the "~2000ms WDDM TDR default"
     // this band used to target was never real on this machine/driver, off by roughly 5000x. The two
@@ -109,6 +125,11 @@ public class BlackwoodGpuRunner {
             System.err.println("Ignoring invalid " + name + "=" + v + ", using default " + defaultValue);
             return defaultValue;
         }
+    }
+
+    private static boolean isEnvSet(String name) {
+        String v = System.getenv(name);
+        return v != null && !v.isBlank();
     }
 
     // Trials for HoleSolver's completion pass when scoring a candidate save (see trySave).
@@ -162,6 +183,12 @@ public class BlackwoodGpuRunner {
         logger.info("BlackwoodGpuRunner starting. numThreads={}, initialStepBudget={}, saveThreshold={}, epochLaunches={}, resumedHighScore={}, seedingEnabled={}, sharedCacheEnabled={}, breakIndexesAllowed={}",
                 NUM_THREADS, INITIAL_STEP_BUDGET, SAVE_THRESHOLD, EPOCH_LAUNCHES, currentHighScore, SEEDING_ENABLED, SHARED_CACHE_ENABLED,
                 java.util.Arrays.toString(BwUtil.BREAK_INDEXES_ALLOWED));
+        if (!NUM_THREADS_EXPLICIT) {
+            logger.warn("ETERNITY_GPU_NUM_THREADS is not set -- running with the conservative code "
+                    + "default of {} threads, not the production-tuned 16384 (see README). Launch via "
+                    + "run-gpu.cmd, or set the env var explicitly, unless this is intentional.",
+                    NUM_THREADS_DEFAULT);
+        }
 
         while (true) {
             if (launchCounter % EPOCH_LAUNCHES == 0) {
@@ -444,7 +471,8 @@ public class BlackwoodGpuRunner {
             int conflicts = countConflicts(completed);
 
             int bestOnDisk = bestConflictsOnDisk(outputDir);
-            int keepThreshold = (bestOnDisk == Integer.MAX_VALUE) ? Integer.MAX_VALUE : bestOnDisk + 1;
+            int keepThreshold = (bestOnDisk == Integer.MAX_VALUE)
+                    ? Integer.MAX_VALUE : Math.max(ALWAYS_SAVE_AT_OR_BELOW, bestOnDisk + 1);
             boolean exact = result.repairedBoard() == null;
             boolean budgetExhausted = result.anyRegionBudgetExhausted();
             if (conflicts > keepThreshold) {
@@ -560,7 +588,8 @@ public class BlackwoodGpuRunner {
             }
             if (conflictsByFile.isEmpty()) return;
 
-            int keepThreshold = conflictsByFile.values().stream().mapToInt(Integer::intValue).min().orElse(0) + 1;
+            int minOnDisk = conflictsByFile.values().stream().mapToInt(Integer::intValue).min().orElse(0);
+            int keepThreshold = Math.max(ALWAYS_SAVE_AT_OR_BELOW, minOnDisk + 1);
             for (Map.Entry<Path, Integer> entry : conflictsByFile.entrySet()) {
                 if (entry.getValue() <= keepThreshold) continue;
                 Path rawBoardFile = entry.getKey();

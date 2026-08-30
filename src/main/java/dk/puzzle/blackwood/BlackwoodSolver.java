@@ -37,6 +37,11 @@ public class BlackwoodSolver {
 
     static final long DEFAULT_NODE_CAP = parseLongEnv("ETERNITY_NODE_CAP", 50_000_000_000L); // matches C# `node_count > 50000000000`
     private static final int DEFAULT_SAVE_THRESHOLD = 248;
+    // See BlackwoodGpuRunner's ALWAYS_SAVE_AT_OR_BELOW for the full rationale: the save/retention
+    // window is normally "within 1 of best-on-disk", which tightens forever as the record improves.
+    // This floor keeps <=12 permanently save-worthy regardless. Mirror any change in
+    // BlackwoodGpuRunner.java, the CPU repo's copy of this file, and Util.cs's PruneAboveThreshold.
+    private static final int ALWAYS_SAVE_AT_OR_BELOW = parseIntEnv("ETERNITY_SAVE_FLOOR", 12);
     private static final int ATTEMPTS_PER_WORKER_PER_BATCH = 5;
     private static final int SCORING_TRIALS = 5000;
     private static final Pattern LABELLED_NAME = Pattern.compile("^Errors(\\d+)_Base(\\d+)_.*_RawBoard\\.txt$");
@@ -329,7 +334,8 @@ public class BlackwoodSolver {
             boolean exact = result.repairedBoard() == null;
             boolean budgetExhausted = result.anyRegionBudgetExhausted();
             int bestOnDisk = bestConflictsOnDisk(outputDir);
-            int keepThreshold = (bestOnDisk == Integer.MAX_VALUE) ? Integer.MAX_VALUE : bestOnDisk + 1;
+            int keepThreshold = (bestOnDisk == Integer.MAX_VALUE)
+                    ? Integer.MAX_VALUE : Math.max(ALWAYS_SAVE_AT_OR_BELOW, bestOnDisk + 1);
             if (conflicts > keepThreshold) {
                 logger.info("Depth record at {} pieces completed to {} conflicts -- not within 1 of best-on-disk ({}), not saving, exact={}, budgetExhausted={}",
                         maxSolveIndex, conflicts, bestOnDisk, exact, budgetExhausted);
@@ -389,6 +395,17 @@ public class BlackwoodSolver {
         }
     }
 
+    private static int parseIntEnv(String name, int defaultValue) {
+        String v = System.getenv(name);
+        if (v == null || v.isBlank()) return defaultValue;
+        try {
+            return Integer.parseInt(v.trim());
+        } catch (NumberFormatException e) {
+            System.err.println("Ignoring invalid " + name + "=" + v + ", using default " + defaultValue);
+            return defaultValue;
+        }
+    }
+
     private static int countConflicts(int[] board) {
         int conflicts = 0;
         for (int r = 0; r < 16; r++) {
@@ -427,7 +444,8 @@ public class BlackwoodSolver {
             }
             if (conflictsByFile.isEmpty()) return;
 
-            int keepThreshold = conflictsByFile.values().stream().mapToInt(Integer::intValue).min().orElse(0) + 1;
+            int minOnDisk = conflictsByFile.values().stream().mapToInt(Integer::intValue).min().orElse(0);
+            int keepThreshold = Math.max(ALWAYS_SAVE_AT_OR_BELOW, minOnDisk + 1);
             for (Map.Entry<Path, Integer> entry : conflictsByFile.entrySet()) {
                 if (entry.getValue() <= keepThreshold) continue;
                 Path rawBoardFile = entry.getKey();
