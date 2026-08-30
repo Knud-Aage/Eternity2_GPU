@@ -60,6 +60,7 @@ All optional, all environment variables:
 | `ETERNITY_GPU_SEEDING` | enabled | `false` starts every attempt from a random corner instead of resuming saved boards. |
 | `ETERNITY_GPU_SEED_SAMPLING` | enabled | `false` picks the seed pool as a strict top-K by depth. Enabled, it draws the pool by depth-weighted random sampling, so restarts don't all resume from the identical elite boards (see below). |
 | `ETERNITY_GPU_FRESH_FRACTION` | `40` | Percent of attempts that ignore seeds and start from a random corner. The explore/exploit dial (see below). |
+| `ETERNITY_GPU_MAX_RETREAT` | `100` | How far back from a seed's tip a resuming thread may pull. Drawn uniformly in `[0, N]`, so the mean pull-back is `N/2` (see below). |
 | `ETERNITY_GPU_SHARED_CACHE` | enabled | `false` reads the four hot per-step tables from `__constant__` rather than a `__shared__` copy. |
 | `ETERNITY_NODE_CAP` | `50000000000` | Nodes before a CPU-side attempt restarts. Blackwood's own value; 25B/50B/100B measured indistinguishable. |
 | `ETERNITY_DRIVE_UPLOAD` | enabled | `false` disables Google Drive mirroring (see below). |
@@ -134,6 +135,14 @@ Three mechanisms keep that in check:
   launch (fresh attempts climb from zero) and can reduce total saves, in exchange for territory the
   seeds cannot reach. Judge it on the ratio of new boards to suppressed duplicates in the log, not
   on save volume.
+
+`ETERNITY_GPU_MAX_RETREAT` is the same dial at finer grain: a resuming thread pulls back a uniform
+`[0, N]` steps from its seed's tip, so the mean is `N/2`. At the default 100, a thread resuming a
+depth-250 board typically restarts near depth 200 — inheriting ~200 of 250 pieces and re-searching
+only the tail. That is local search around a board already known, which is worth little if good
+boards are isolated peaks rather than clustered. A fresh start is this taken to its limit, so the
+two settings pull the same way; move one at a time if you want the duplicate ratio to stay
+attributable.
 
 ### Break schedule
 

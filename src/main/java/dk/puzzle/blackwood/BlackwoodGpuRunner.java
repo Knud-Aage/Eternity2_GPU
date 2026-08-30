@@ -105,7 +105,21 @@ public class BlackwoodGpuRunner {
     // How far back from a seed's tip a thread may randomly pull before resuming. Needed for
     // diversity (candidate order is global, so same board + same depth = duplicated work), and it
     // also lets threads explore alternatives that branch off well below the tip.
-    private static final int MAX_RETREAT = 100;
+    //
+    // The kernel draws this UNIFORMLY in [0, MAX_RETREAT] (see startNewAttempt), so the mean pull-back
+    // is half the value: at 100, a thread resuming a depth-250 seed typically restarts around depth
+    // 200, inheriting ~200 of 250 pieces and re-searching only the tail. That is local search around
+    // a board already known, which buys little if good boards are isolated peaks rather than
+    // clustered -- consistent with Blackwood's own account that 470 was luck rather than the product
+    // of systematic optimisation. Roughly half the draws do land below depth 201, where breaks are
+    // still forbidden, so the conflict-free zone is not entirely frozen; the first ~150 pieces are
+    // inherited essentially always though.
+    //
+    // Left at 100 for now deliberately: the fresh fraction was raised 10 -> 40 on 2026-08-30 and is
+    // the same dial taken to its limit (a fresh start is a retreat all the way to zero), so moving
+    // both at once would confound the duplicate-ratio measurement that change set up. Revisit once
+    // there is a day of data on the new/duplicate ratio.
+    private static final int MAX_RETREAT = parseIntEnv("ETERNITY_GPU_MAX_RETREAT", 100);
     // Percentage of attempts that ignore the seeds and start from a random corner.
     //
     // Raised 10 -> 40 on 2026-08-30. With persistent duplicate suppression in place the repeat rate
