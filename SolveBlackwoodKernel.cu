@@ -428,6 +428,8 @@ __device__ inline int startNewAttempt(
 __device__ inline void runBlackwoodDfsBody(
     int tid,
     const int* d_payload,             // global memory: flat candidate payload, all 10 tables concatenated
+    int numTableVariants,             // how many independently-jittered copies of d_payload were uploaded
+    int payloadStride,                // element stride between one variant and the next (== MAX_PAYLOAD_SIZE)
     unsigned long long seedBase,      // host-varied every launch (nanoTime ^ launchCounter)
     unsigned long long stepBudget,    // per-thread node cap THIS launch -- a TDR safety valve, not a search-depth cap
     int* d_gpuHighScore,              // atomic high-water maxSolveIndex across all threads, all launches this run
@@ -446,6 +448,7 @@ __device__ inline void runBlackwoodDfsBody(
     int* d_persistBsOffset,
     int* d_persistBsCount,
     int* d_persistBsPayload,
+    int* d_persistTableVariant,       // [numThreads] which of the numTableVariants copies this thread is using
     unsigned long long* d_persistRngState,
     int* d_persistSolveIndex,
     int* d_persistBestBoard,
@@ -483,6 +486,15 @@ __device__ inline void runBlackwoodDfsBody(
     int solveIndex;
     int maxSolveIndex;
     int bestPiecesPlaced;
+    // Which independently-jittered payload copy this thread uses for the lifetime of the CURRENT
+    // attempt only -- re-picked every time startNewAttempt() is called (fresh init below, or the
+    // mid-loop reseed-after-exhaustion branch further down), exactly like bsPayload's own
+    // per-attempt re-randomization. myPayload must stay fixed between those points: a candidate's
+    // resume index (pieceIndexToTryNext) is only meaningful against the specific ordering it was
+    // computed against, so switching variants mid-attempt would desync backtracking from what was
+    // actually already tried (see the module header's monotonicity note -- same class of hazard).
+    int tableVariant;
+    const int* myPayload;
 
     const int P256 = tid * 256;
     const int P23  = tid * 23;
@@ -493,7 +505,10 @@ __device__ inline void runBlackwoodDfsBody(
         rngState = seedBase ^ ((unsigned long long)tid * 0x9E3779B97F4A7C15ULL);
         if (rngState == 0) rngState = 0x9E3779B97F4A7C15ULL; // xorshift64* requires a non-zero state
 
-        solveIndex = startNewAttempt(d_payload, d_seedBoards, d_seedDepths, numSeeds, maxRetreat, freshFractionPercent,
+        tableVariant = randInt(&rngState, (unsigned int)numTableVariants);
+        myPayload = d_payload + (size_t)tableVariant * (size_t)payloadStride;
+
+        solveIndex = startNewAttempt(myPayload, d_seedBoards, d_seedDepths, numSeeds, maxRetreat, freshFractionPercent,
                                      d_seedShortfalls, board, pieceIndexToTryNext, cumulativeBreaks,
                                      cumulativeHeuristicSideCount, pieceUsedBits,
                                      bsOffset, bsCount, bsPayload, stepBoardIdx, stepToTableId, &rngState);
@@ -515,6 +530,8 @@ __device__ inline void runBlackwoodDfsBody(
             bsCount[i] = d_persistBsCount[P23 + i];
         }
         for (int i = 0; i < MAX_BOTTOM_PAYLOAD; i++) bsPayload[i] = d_persistBsPayload[P96 + i];
+        tableVariant = d_persistTableVariant[tid];
+        myPayload = d_payload + (size_t)tableVariant * (size_t)payloadStride;
         rngState = d_persistRngState[tid];
         solveIndex = d_persistSolveIndex[tid];
         bestPiecesPlaced = d_persistBestPiecesPlaced[tid];
@@ -579,7 +596,9 @@ __device__ inline void runBlackwoodDfsBody(
             // Rather than idling for the rest of this launch's node budget, start another attempt
             // immediately and keep going -- from a saved board if seeding is on (a thread that
             // exhausts a deep subtree should return to the frontier, not to a random corner).
-            solveIndex = startNewAttempt(d_payload, d_seedBoards, d_seedDepths, numSeeds, maxRetreat, freshFractionPercent,
+            tableVariant = randInt(&rngState, (unsigned int)numTableVariants);
+            myPayload = d_payload + (size_t)tableVariant * (size_t)payloadStride;
+            solveIndex = startNewAttempt(myPayload, d_seedBoards, d_seedDepths, numSeeds, maxRetreat, freshFractionPercent,
                                          d_seedShortfalls, board, pieceIndexToTryNext, cumulativeBreaks,
                                          cumulativeHeuristicSideCount, pieceUsedBits,
                                          bsOffset, bsCount, bsPayload, stepBoardIdx, stepToTableId, &rngState);
@@ -630,7 +649,7 @@ __device__ inline void runBlackwoodDfsBody(
             int heuristicFloor = heuristicGateActive ? heuristicArray[solveIndex] : 0;
 
             for (int i = pieceIndexToTryNext[solveIndex]; i < cnt; i++) {
-                int rec = useBottom ? bsPayload[off + i] : d_payload[off + i];
+                int rec = useBottom ? bsPayload[off + i] : myPayload[off + i];
                 if (bwBreakCount(rec) > breaksThisTurn) break; // sort-order invariant: table is break-count-monotonic
 
                 int pieceNum = bwPieceNum(rec);
@@ -680,6 +699,7 @@ __device__ inline void runBlackwoodDfsBody(
             d_persistBsCount[P23 + i] = bsCount[i];
         }
         for (int i = 0; i < MAX_BOTTOM_PAYLOAD; i++) d_persistBsPayload[P96 + i] = bsPayload[i];
+        d_persistTableVariant[tid] = tableVariant;
         d_persistRngState[tid] = rngState;
         d_persistSolveIndex[tid] = solveIndex;
         d_persistBestPiecesPlaced[tid] = bestPiecesPlaced;
@@ -711,6 +731,8 @@ __device__ inline void runBlackwoodDfsBody(
 // starts false), and always available as a fallback regardless of that flag.
 extern "C" __global__ void solveBlackwoodDfs(
     const int* d_payload,
+    int numTableVariants,
+    int payloadStride,
     unsigned long long seedBase,
     unsigned long long stepBudget,
     int  numThreads,
@@ -728,6 +750,7 @@ extern "C" __global__ void solveBlackwoodDfs(
     int* d_persistBsOffset,
     int* d_persistBsCount,
     int* d_persistBsPayload,
+    int* d_persistTableVariant,
     unsigned long long* d_persistRngState,
     int* d_persistSolveIndex,
     int* d_persistBestBoard,
@@ -747,10 +770,10 @@ extern "C" __global__ void solveBlackwoodDfs(
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= numThreads) return;
 
-    runBlackwoodDfsBody(tid, d_payload, seedBase, stepBudget, d_gpuHighScore, d_bestBoardOut, d_solution,
+    runBlackwoodDfsBody(tid, d_payload, numTableVariants, payloadStride, seedBase, stepBudget, d_gpuHighScore, d_bestBoardOut, d_solution,
         d_solvedFlag, d_totalNodes, d_threadDepths, d_persistBoard, d_persistPieceIndexToTryNext,
         d_persistCumulativeBreaks, d_persistCumulativeHeuristicSideCount, d_persistPieceUsedBits,
-        d_persistBsOffset, d_persistBsCount, d_persistBsPayload, d_persistRngState, d_persistSolveIndex,
+        d_persistBsOffset, d_persistBsCount, d_persistBsPayload, d_persistTableVariant, d_persistRngState, d_persistSolveIndex,
         d_persistBestBoard, d_persistBestPiecesPlaced, d_needsInit, d_seedBoards, d_seedDepths,
         numSeeds, maxRetreat, freshFractionPercent, d_seedShortfalls,
         c_stepToTableId, c_stepBoardIdx, c_breakArray, c_heuristicArray
@@ -765,6 +788,8 @@ extern "C" __global__ void solveBlackwoodDfs(
 // Opt-in via BlackwoodGpuEngine.sharedCacheEnabled; see the header note for why.
 extern "C" __global__ void solveBlackwoodDfsShared(
     const int* d_payload,
+    int numTableVariants,
+    int payloadStride,
     unsigned long long seedBase,
     unsigned long long stepBudget,
     int  numThreads,
@@ -782,6 +807,7 @@ extern "C" __global__ void solveBlackwoodDfsShared(
     int* d_persistBsOffset,
     int* d_persistBsCount,
     int* d_persistBsPayload,
+    int* d_persistTableVariant,
     unsigned long long* d_persistRngState,
     int* d_persistSolveIndex,
     int* d_persistBestBoard,
@@ -818,10 +844,10 @@ extern "C" __global__ void solveBlackwoodDfsShared(
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= numThreads) return;
 
-    runBlackwoodDfsBody(tid, d_payload, seedBase, stepBudget, d_gpuHighScore, d_bestBoardOut, d_solution,
+    runBlackwoodDfsBody(tid, d_payload, numTableVariants, payloadStride, seedBase, stepBudget, d_gpuHighScore, d_bestBoardOut, d_solution,
         d_solvedFlag, d_totalNodes, d_threadDepths, d_persistBoard, d_persistPieceIndexToTryNext,
         d_persistCumulativeBreaks, d_persistCumulativeHeuristicSideCount, d_persistPieceUsedBits,
-        d_persistBsOffset, d_persistBsCount, d_persistBsPayload, d_persistRngState, d_persistSolveIndex,
+        d_persistBsOffset, d_persistBsCount, d_persistBsPayload, d_persistTableVariant, d_persistRngState, d_persistSolveIndex,
         d_persistBestBoard, d_persistBestPiecesPlaced, d_needsInit, d_seedBoards, d_seedDepths,
         numSeeds, maxRetreat, freshFractionPercent, d_seedShortfalls,
         sm_stepToTableId, sm_stepBoardIdx, sm_breakArray, sm_heuristicArray

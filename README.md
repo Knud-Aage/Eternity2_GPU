@@ -57,6 +57,7 @@ All optional, all environment variables:
 |---|---|---|
 | `ETERNITY_GPU_NUM_THREADS` | `1024` | Independent DFS searches. **16384 measured best** at production scale; the default is conservative. |
 | `ETERNITY_GPU_SOLUTIONS_DIR` | `~/EternitySolutions_GPU` | Where boards are saved. |
+| `ETERNITY_GPU_TABLE_VARIANTS` | `16` | Independently-jittered candidate-table copies. Each thread picks one per attempt instead of the whole population sharing one frozen ordering (see below). |
 | `ETERNITY_GPU_SEEDING` | **disabled** | `true` resumes attempts from saved boards instead of starting every one from a random corner (see below). |
 | `ETERNITY_GPU_SEED_SAMPLING` | enabled | `false` picks the seed pool as a strict top-K by depth. Enabled, it draws the pool by depth-weighted random sampling, so restarts don't all resume from the identical elite boards (see below). |
 | `ETERNITY_GPU_FRESH_FRACTION` | `40` | Percent of attempts that ignore seeds and start from a random corner. The explore/exploit dial (see below). |
@@ -111,6 +112,28 @@ Two things make it work on a GPU:
 
 Search state resets only at *epoch* boundaries (`EPOCH_LAUNCHES`, default 20,000), when candidate
 tables are rebuilt and re-randomised.
+
+### Per-thread candidate diversity
+
+Candidate order (which piece a thread tries first at a given board position) has always been
+mostly global: every thread shared the one candidate table built at the last epoch boundary, so two
+threads reaching the same board state made the same greedy choice. Only the bottom row (~6% of the
+board) got genuine per-thread jitter, rebuilt fresh every attempt from that thread's own RNG.
+
+`ETERNITY_GPU_TABLE_VARIANTS` extends that to the rest of the board: at epoch boundaries the host
+builds N independently-jittered copies of the candidate payload (same tie-break formula, N different
+random draws), uploads all of them, and each thread picks one per attempt (persisted for that
+attempt's lifetime, re-picked on every fresh start or reseed). This is as close to the CPU port's own
+full-reshuffle-per-attempt diversity as this architecture allows without abandoning the shared frozen
+table a resumed search cursor depends on.
+
+The default (16) is deliberately conservative rather than the engine's headroom (64): the payload has
+always lived in global memory (a single copy is ~154KB, already past the 64KB `__constant__` budget
+the geometry-only CSR tables use, which this doesn't touch), and global memory's fast path is the L2
+cache. One shared table lets all 16384 threads reading the same bucket at the same depth hit one
+cache line; splitting into N copies trades some of that reuse for diversity. At 16, ~1024 threads
+still land on each copy, and the total footprint (16 x ~154KB =~ 2.5MB) is trivial next to a modern
+card's L2 -- but this trade-off is why the number isn't simply maxed out.
 
 ### Seeding is off by default
 

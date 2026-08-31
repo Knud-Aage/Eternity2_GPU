@@ -32,7 +32,7 @@ import java.util.regex.Pattern;
  * <p>Each GPU launch resumes every thread's persisted in-progress search rather than restarting it
  * (see {@code SolveBlackwoodKernel.cu}'s 2026-08-04 header note) -- so table rebuilds can no longer
  * happen every launch (a resumed cursor into a replaced table would point at the wrong candidates).
- * Instead, {@link BlackwoodSolver#prepare()} + {@link BwGpuTables#build} + a full thread-state reset
+ * Instead, {@link BlackwoodSolver#prepare()} + {@link BwGpuTables#buildVariants} + a full thread-state reset
  * ({@link BlackwoodGpuEngine#resetEpoch()}) happen only once every {@link #EPOCH_LAUNCHES} launches
  * ("epoch" boundaries); every other launch just resumes. {@code solver} here is used only for its
  * {@code prepare()} output (the candidate tables) -- {@code solvePuzzle()}/{@code run()} are never
@@ -100,6 +100,26 @@ public class BlackwoodGpuRunner {
     private static final long FAST_LAUNCH_MILLIS = 4_000L;  // below this, double the budget next launch
     private static final long SLOW_LAUNCH_MILLIS = 10_000L; // above this, halve it
     private static final long EPOCH_LAUNCHES = 20_000;
+    // 2026-08-31: until now every thread in the population read from ONE frozen candidate ordering
+    // for the whole epoch (~1-2 days) -- true per-thread jitter existed only for the bottom row
+    // (bsPayload, ~6% of the board). This gives every thread an independent copy for the other 94%
+    // too, matching the C# port's own full-reshuffle-per-attempt diversity as closely as this
+    // architecture allows (see BwGpuTables.buildVariants). Each thread picks one variant at random
+    // per attempt and keeps it for that attempt's lifetime (persisted across launches, re-picked on
+    // every fresh start or reseed -- see SolveBlackwoodKernel.cu's tableVariant).
+    //
+    // Deliberately modest, not MAX_TABLE_VARIANTS=64: the payload lives in GLOBAL memory (it always
+    // has -- a single copy alone is ~154KB, already past the entire 64KB __constant__ budget used by
+    // the geometry-only CSR tables, which this change does not touch or grow at all). Global memory
+    // is large, but the fast path for it is the L2 cache, and today's single shared table lets all
+    // 16384 threads reading the same bucket at the same depth hit one identical cache line -- close
+    // to best-case reuse. Splitting into N independent copies trades some of that cross-thread reuse
+    // for diversity: at 16, ~1024 threads still land on each copy (at the production 16384-thread
+    // count), so within-variant sharing stays high, and the total footprint (16 * ~154KB =~ 2.5MB)
+    // stays trivial next to the tens-of-MB L2 on the compute_120-class card this targets -- comfortably
+    // resident regardless. Overridable so the actual duplicate/novel ratio this produces can be
+    // measured before pushing it higher.
+    private static final int NUM_TABLE_VARIANTS = parseIntEnv("ETERNITY_GPU_TABLE_VARIANTS", 16);
     private static final int MIN_SEED_DEPTH = 245;
     private static final int MAX_SEEDS = 256;
     // How far back from a seed's tip a thread may randomly pull before resuming. Needed for
@@ -255,8 +275,8 @@ public class BlackwoodGpuRunner {
         long stepBudget = INITIAL_STEP_BUDGET;
         loadSavedBoardIndex(outputDir);
 
-        logger.info("BlackwoodGpuRunner starting. numThreads={}, initialStepBudget={}, saveThreshold={}, epochLaunches={}, resumedHighScore={}, seedingEnabled={}, sharedCacheEnabled={}, breakIndexesAllowed={}",
-                NUM_THREADS, INITIAL_STEP_BUDGET, SAVE_THRESHOLD, EPOCH_LAUNCHES, currentHighScore, SEEDING_ENABLED, SHARED_CACHE_ENABLED,
+        logger.info("BlackwoodGpuRunner starting. numThreads={}, initialStepBudget={}, saveThreshold={}, epochLaunches={}, tableVariants={}, resumedHighScore={}, seedingEnabled={}, sharedCacheEnabled={}, breakIndexesAllowed={}",
+                NUM_THREADS, INITIAL_STEP_BUDGET, SAVE_THRESHOLD, EPOCH_LAUNCHES, NUM_TABLE_VARIANTS, currentHighScore, SEEDING_ENABLED, SHARED_CACHE_ENABLED,
                 java.util.Arrays.toString(BwUtil.BREAK_INDEXES_ALLOWED));
         if (!NUM_THREADS_EXPLICIT) {
             logger.warn("ETERNITY_GPU_NUM_THREADS is not set -- running with the conservative code "
@@ -268,7 +288,7 @@ public class BlackwoodGpuRunner {
         while (true) {
             if (launchCounter % EPOCH_LAUNCHES == 0) {
                 solver.prepare();
-                BwGpuTables.GpuTableSet tables = BwGpuTables.build(solver);
+                BwGpuTables.MultiVariantTableSet tables = BwGpuTables.buildVariants(solver, NUM_TABLE_VARIANTS);
                 engine.uploadTables(tables);
                 if (SEEDING_ENABLED) {
                     // Reload seeds at each epoch: boards saved since the last boundary (including

@@ -15,7 +15,7 @@ $root = $PSScriptRoot
 if ($null -eq (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vswhere) {
-        $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        $vsPath = & $vswhere -latest -prerelease -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
         $found = Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" -Filter cl.exe -Recurse -ErrorAction SilentlyContinue |
                  Where-Object { $_.FullName -match "Hostx64\\x64" } | Select-Object -First 1
         if ($null -ne $found) { $env:PATH = "$($found.Directory.FullName);$env:PATH" }

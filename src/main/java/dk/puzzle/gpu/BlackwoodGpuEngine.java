@@ -19,6 +19,12 @@ public class BlackwoodGpuEngine {
     // constants in sync with BwGpuTablesTest's own thresholds if either ever needs to move.
     private static final int MAX_PAYLOAD_SIZE = 50_000;
     private static final int MAX_BOTTOM_PAYLOAD_SIZE = 96;
+    // Independently-jittered copies of the main payload a thread can be assigned to for the
+    // lifetime of one attempt, so 16384 threads stop sharing one frozen candidate ordering for an
+    // entire epoch. d_payload is sized MAX_PAYLOAD_SIZE * MAX_TABLE_VARIANTS; at 50,000 ints each,
+    // 64 variants is 12.8 MB of global memory -- trivial next to an 8 GB card. Headroom over any
+    // realistic numVariants, same convention as MAX_THREADS/MAX_SEEDS.
+    private static final int MAX_TABLE_VARIANTS = 64;
 
     private static final String PRODUCTION_PTX = "SolveBlackwoodKernel.ptx";
     private static final String PROFILE_PTX = "SolveBlackwoodKernel.profile.ptx";
@@ -61,6 +67,12 @@ public class BlackwoodGpuEngine {
     private CUdeviceptr d_persistBestPiecesPlaced;
     private CUdeviceptr d_needsInit;
     private CUdeviceptr d_profileCounters; // null unless profilingEnabled
+    // Which of the numTableVariants independently-jittered payload copies this thread is using for
+    // the lifetime of its current attempt -- chosen once (alongside bsPayload) when a new attempt
+    // starts, persisted unchanged across launches like every other per-attempt field. Defaults to
+    // numTableVariants=1 (payloadStride == the single uploaded payload's own length), which is
+    // exactly today's shared-table behaviour, so this is off unless deliberately turned up.
+    private CUdeviceptr d_persistTableVariant;
 
     // Seeding from previously saved deep boards. numSeeds == 0 keeps the original
     // always-start-from-a-random-corner behaviour, so seeding is strictly opt-in.
@@ -71,6 +83,8 @@ public class BlackwoodGpuEngine {
     private volatile int numSeeds = 0;
     private volatile int maxRetreat = 0;
     private volatile int freshFractionPercent = 0;
+    private volatile int numTableVariants = 1;
+    private volatile int payloadStride = 0;
 
     private volatile boolean sharedCacheEnabled = false;
 
@@ -112,7 +126,7 @@ public class BlackwoodGpuEngine {
     }
 
     private void allocatePersistentBuffers() {
-        d_payload      = alloc((long) MAX_PAYLOAD_SIZE * Sizeof.INT);
+        d_payload      = alloc((long) MAX_PAYLOAD_SIZE * MAX_TABLE_VARIANTS * Sizeof.INT);
         d_gpuHighScore = alloc(Sizeof.INT);
         d_bestBoardOut = alloc(256L * Sizeof.INT);
         d_solution     = alloc(256L * Sizeof.INT);
@@ -136,6 +150,7 @@ public class BlackwoodGpuEngine {
         d_persistBestBoard                      = alloc((long) MAX_THREADS * 256 * Sizeof.INT);
         d_persistBestPiecesPlaced               = alloc((long) MAX_THREADS * Sizeof.INT);
         d_needsInit                             = alloc((long) MAX_THREADS * Sizeof.INT);
+        d_persistTableVariant                   = alloc((long) MAX_THREADS * Sizeof.INT);
 
         d_seedBoards     = alloc((long) MAX_SEEDS * 256 * Sizeof.INT);
         d_seedDepths     = alloc((long) MAX_SEEDS * Sizeof.INT);
@@ -291,11 +306,37 @@ public class BlackwoodGpuEngine {
     }
 
     /**
-     * Uploads a fresh candidate-table set -- call once per batch, before {@link #runBlackwoodDfs}.
+     * Single-variant convenience wrapper -- identical to uploading a {@code MultiVariantTableSet}
+     * of one, i.e. today's original shared-table behaviour (every thread reads the same ordering).
      */
     public void uploadTables(BwGpuTables.GpuTableSet tables) {
-        if (tables.payload().length > MAX_PAYLOAD_SIZE) {
-            throw new IllegalStateException("candidate payload size " + tables.payload().length
+        uploadTables(new BwGpuTables.MultiVariantTableSet(
+                tables.csrOffset(), tables.csrCount(), new int[][]{tables.payload()},
+                tables.bottomRawOffset(), tables.bottomRawCount(), tables.bottomRawPayload(),
+                tables.stepToTableId(), tables.stepBoardIdx(),
+                tables.breakArray(), tables.heuristicArray()));
+    }
+
+    /**
+     * Uploads {@code numVariants} independently-jittered candidate-table sets -- call once per
+     * batch, before {@link #runBlackwoodDfs}. Each variant lands in its own MAX_PAYLOAD_SIZE-sized
+     * slice of {@code d_payload} (stride recorded in {@link #payloadStride}), so a thread can select
+     * its own copy at runtime via {@code d_persistTableVariant} (see {@code tableVariant} in
+     * SolveBlackwoodKernel.cu) with no risk of one variant's reads spilling into another's slice.
+     *
+     * <p>csrOffset, csrCount, and the bottomRaw/step/break/heuristic tables are geometry-only and
+     * shared across variants (see {@link BwGpuTables.MultiVariantTableSet}'s own javadoc), so they
+     * upload exactly once here regardless of how many payload variants there are.</p>
+     */
+    public void uploadTables(BwGpuTables.MultiVariantTableSet tables) {
+        int numVariants = tables.payloadVariants().length;
+        if (numVariants > MAX_TABLE_VARIANTS) {
+            throw new IllegalStateException("numVariants " + numVariants
+                    + " exceeds MAX_TABLE_VARIANTS=" + MAX_TABLE_VARIANTS);
+        }
+        int payloadLength = tables.payloadVariants()[0].length;
+        if (payloadLength > MAX_PAYLOAD_SIZE) {
+            throw new IllegalStateException("candidate payload size " + payloadLength
                     + " exceeds MAX_PAYLOAD_SIZE=" + MAX_PAYLOAD_SIZE + " -- bump the buffer (see BwGpuTablesTest for the real measured size)");
         }
         if (tables.bottomRawPayload().length > MAX_BOTTOM_PAYLOAD_SIZE) {
@@ -317,7 +358,17 @@ public class BlackwoodGpuEngine {
         uploadConstant("c_breakArray", tables.breakArray(), 256L * Sizeof.INT);
         uploadConstant("c_heuristicArray", tables.heuristicArray(), 256L * Sizeof.INT);
 
-        cuMemcpyHtoD(d_payload, Pointer.to(tables.payload()), (long) tables.payload().length * Sizeof.INT);
+        for (int v = 0; v < numVariants; v++) {
+            int[] variant = tables.payloadVariants()[v];
+            if (variant.length != payloadLength) {
+                throw new IllegalStateException("variant " + v + " has payload length " + variant.length
+                        + ", expected " + payloadLength + " -- all variants must be equal length (see BwGpuTables.buildVariants)");
+            }
+            CUdeviceptr slice = d_payload.withByteOffset((long) v * MAX_PAYLOAD_SIZE * Sizeof.INT);
+            cuMemcpyHtoD(slice, Pointer.to(variant), (long) variant.length * Sizeof.INT);
+        }
+        this.numTableVariants = numVariants;
+        this.payloadStride = MAX_PAYLOAD_SIZE;
     }
 
     public record GpuResult(int newHighScore, boolean solved, long nodesTaken, int[] threadDepths) {
@@ -344,6 +395,8 @@ public class BlackwoodGpuEngine {
 
         Pointer[] params = {
                 Pointer.to(d_payload),
+                Pointer.to(new int[]{numTableVariants}),
+                Pointer.to(new int[]{payloadStride}),
                 Pointer.to(new long[]{seedBase}),
                 Pointer.to(new long[]{stepBudget}),
                 Pointer.to(new int[]{numThreads}),
@@ -361,6 +414,7 @@ public class BlackwoodGpuEngine {
                 Pointer.to(d_persistBsOffset),
                 Pointer.to(d_persistBsCount),
                 Pointer.to(d_persistBsPayload),
+                Pointer.to(d_persistTableVariant),
                 Pointer.to(d_persistRngState),
                 Pointer.to(d_persistSolveIndex),
                 Pointer.to(d_persistBestBoard),
