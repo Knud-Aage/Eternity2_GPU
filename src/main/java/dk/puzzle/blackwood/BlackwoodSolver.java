@@ -44,6 +44,34 @@ public class BlackwoodSolver {
     private static final int ALWAYS_SAVE_AT_OR_BELOW = parseIntEnv("ETERNITY_SAVE_FLOOR", 12);
     private static final int ATTEMPTS_PER_WORKER_PER_BATCH = 5;
     private static final int SCORING_TRIALS = 5000;
+
+    /**
+     * The official Eternity II clue: piece number, board position (0-indexed), and required
+     * rotation. Position and rotation were NOT taken from any public writeup -- they were
+     * independently re-derived 2026-09-01 and cross-checked three ways: (1) the position for each
+     * piece matches a comment recovered from the retired EternitySolver.java, which recorded these
+     * for an actually-running solver; (2) the position also matches a live user readout of bucas's
+     * own "Clues" preset; (3) the rotation was derived by translating each piece's raw Blackwood
+     * colours into TheSil's colour space (via {@code BLACKWOOD_TO_THESIL}) and finding which
+     * rotation of that translation reproduces TheSil's own raw pieces.csv entry for the same piece
+     * -- this produced a CONSTANT +2 offset with zero exceptions across all 4 non-center pieces,
+     * and, as a blind check, predicts rotation 2 for the center (139) too, exactly matching the
+     * `rotations() == 2` filter already live below -- which this derivation did not use as an input.
+     * Non-center hints do not have the center's westStart/southStart-style neighbour pre-filtering
+     * (see their own comment below): whether any of these 4 need the same treatment depends on
+     * where each sits in BwUtil.getBoardOrder() relative to its neighbours, which has not been
+     * checked. If thrashing shows up right around one of these positions, that is the first thing
+     * to look at.
+     */
+    private record HintPin(int pieceNumber, int row, int col, int rotation) {
+    }
+
+    private static final List<HintPin> HINT_PINS = List.of(
+            new HintPin(139, 7, 7, 2),   // center
+            new HintPin(208, 2, 2, 2),
+            new HintPin(255, 2, 13, 2),
+            new HintPin(181, 13, 2, 2),
+            new HintPin(249, 13, 13, 3));
     private static final Pattern LABELLED_NAME = Pattern.compile("^Errors(\\d+)_Base(\\d+)_.*_RawBoard\\.txt$");
     private static final Path COMPLETED_LINKS_LOG = Path.of("logs", "java_port_completed_links.log");
 
@@ -67,7 +95,14 @@ public class BlackwoodSolver {
     BwRotatedPiece[][] middlesNoBreak;
     BwRotatedPiece[][] southStart;
     BwRotatedPiece[][] westStart;
-    BwRotatedPiece[][] start;
+    BwRotatedPiece[][] start; // piece 139, the center clue
+    // The 4 non-center clues. Named individually, not held in a Map, because BwGpuTables.build()
+    // matches masterPieceLookup entries against tablesInOrder() by REFERENCE IDENTITY -- each one
+    // needs its own distinct, directly-nameable field for that to work.
+    BwRotatedPiece[][] hint208;
+    BwRotatedPiece[][] hint255;
+    BwRotatedPiece[][] hint181;
+    BwRotatedPiece[][] hint249;
     Map<Integer, List<BwUtil.RotatedCandidate>> bottomSidePiecesRotated; // raw, re-sorted every attempt
     BwRotatedPiece[][][] masterPieceLookup;
     int[] boardOrderRow;
@@ -116,8 +151,11 @@ public class BlackwoodSolver {
 
         List<BwPiece> cornerPieces = boardPieces.stream().filter(p -> p.pieceType() == 2).toList();
         List<BwPiece> sidePieces = boardPieces.stream().filter(p -> p.pieceType() == 1).toList();
-        List<BwPiece> middlePieces = boardPieces.stream().filter(p -> p.pieceType() == 0 && p.pieceNumber() != 139).toList();
-        BwPiece startPiece = boardPieces.stream().filter(p -> p.pieceNumber() == 139).findFirst().orElseThrow();
+        Set<Integer> hintPieceNumbers = HINT_PINS.stream().map(HintPin::pieceNumber).collect(java.util.stream.Collectors.toSet());
+        List<BwPiece> middlePieces = boardPieces.stream().filter(p -> p.pieceType() == 0 && !hintPieceNumbers.contains(p.pieceNumber())).toList();
+        java.util.function.Function<Integer, BwPiece> hintPiece = num ->
+                boardPieces.stream().filter(p -> p.pieceNumber() == num).findFirst()
+                        .orElseThrow(() -> new IllegalStateException("Hint piece " + num + " not found in piece set"));
 
         Random rand = new Random(); // one instance reused across this whole prepare() call, matches C#'s lifetime
 
@@ -142,7 +180,11 @@ public class BlackwoodSolver {
         middlesNoBreak = buildTable(middlePieces, false, null, rand);
         southStart = buildTable(middlePieces, false, rp -> rp.topSide() == 6, rand);
         westStart = buildTable(middlePieces, false, rp -> rp.rightSide() == 11, rand);
-        start = buildTable(List.of(startPiece), false, rp -> rp.rotations() == 2, rand);
+        start = buildTable(List.of(hintPiece.apply(139)), false, rp -> rp.rotations() == 2, rand);
+        hint208 = buildTable(List.of(hintPiece.apply(208)), false, rp -> rp.rotations() == 2, rand);
+        hint255 = buildTable(List.of(hintPiece.apply(255)), false, rp -> rp.rotations() == 2, rand);
+        hint181 = buildTable(List.of(hintPiece.apply(181)), false, rp -> rp.rotations() == 2, rand);
+        hint249 = buildTable(List.of(hintPiece.apply(249)), false, rp -> rp.rotations() == 3, rand);
 
         if (corners[0] == null || corners[0].length == 0) {
             throw new IllegalStateException("corners[0] is empty -- no corner piece qualifies for LeftBottom=0; step-0 seeding would fail.");
@@ -169,6 +211,14 @@ public class BlackwoodSolver {
                 masterPieceLookup[row * 16 + col] = leftSides;
             } else if (row == 7 && col == 7) {
                 masterPieceLookup[row * 16 + col] = start;
+            } else if (row == 2 && col == 2) {
+                masterPieceLookup[row * 16 + col] = hint208;
+            } else if (row == 2 && col == 13) {
+                masterPieceLookup[row * 16 + col] = hint255;
+            } else if (row == 13 && col == 2) {
+                masterPieceLookup[row * 16 + col] = hint181;
+            } else if (row == 13 && col == 13) {
+                masterPieceLookup[row * 16 + col] = hint249;
             } else if (row == 7 && col == 6) {
                 masterPieceLookup[row * 16 + col] = westStart;
             } else if (row == 6 && col == 7) {

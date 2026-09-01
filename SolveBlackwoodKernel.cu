@@ -85,7 +85,12 @@
  * no thread-0-only serial copy, no loop needed.
  */
 
-#define NUM_TABLES 10
+// 10 -> 14 on 2026-09-01: one CSR table added per non-center Eternity II clue piece (208, 255,
+// 181, 249 -- see BlackwoodSolver.HINT_PINS in the Java source for the full derivation). This
+// #define sizes c_csrOffset/c_csrCount below and MUST stay equal to BwGpuTables.NUM_TABLES on the
+// Java side -- nothing enforces that automatically. Rebuild the .ptx (build-kernel.ps1) after
+// changing this.
+#define NUM_TABLES 14
 #define KEY_SPACE  529
 #define TABLE_CORNERS         0
 #define TABLE_LEFT_SIDES      1
@@ -97,6 +102,10 @@
 #define TABLE_SOUTH_START     7
 #define TABLE_WEST_START      8
 #define TABLE_START           9
+#define TABLE_HINT_208        10
+#define TABLE_HINT_255        11
+#define TABLE_HINT_181        12
+#define TABLE_HINT_249        13
 
 #define FIRST_BREAK_INDEX   201
 #define HEURISTIC_MAX_INDEX 160
@@ -133,8 +142,8 @@
 #define BW_PC_CNT_MAX               9
 #define BW_PC_SLOTS                16
 
-__constant__ int c_csrOffset[NUM_TABLES * KEY_SPACE];        // 21,160 B
-__constant__ int c_csrCount [NUM_TABLES * KEY_SPACE];        // 21,160 B
+__constant__ int c_csrOffset[NUM_TABLES * KEY_SPACE];        // 29,624 B (14 * 529 * 4)
+__constant__ int c_csrCount [NUM_TABLES * KEY_SPACE];        // 29,624 B (14 * 529 * 4)
 __constant__ int c_bottomRawOffset[23];                      // 92 B
 __constant__ int c_bottomRawCount [23];                      // 92 B
 __constant__ int c_bottomRawPayload[MAX_BOTTOM_PAYLOAD];     // 384 B, real count ~56
@@ -142,7 +151,10 @@ __constant__ int c_stepToTableId[256];                       // 1,024 B; row-0 s
 __constant__ int c_stepBoardIdx[256];                        // 1,024 B; row*16+col per step
 __constant__ int c_breakArray[256];                          // 1,024 B
 __constant__ int c_heuristicArray[256];                      // 1,024 B
-// Total ~47 KB of this module's own fresh 64 KB __constant__ budget.
+// Total ~62.4 KB of this module's own fresh 64 KB __constant__ budget (was ~47 KB before the
+// 2026-09-01 NUM_TABLES 10->14 change added ~16.8 KB across c_csrOffset/c_csrCount). Only ~1.6 KB
+// of headroom left -- if a future table is ever added, it likely needs to come out of KEY_SPACE
+// or move a table out of __constant__ memory rather than just growing NUM_TABLES again.
 
 __device__ inline int bwPieceNum(int r)       { return (r & 0xFF) + 1; }
 __device__ inline int bwTopSide(int r)        { return (r >> 8)  & 0xFF; }

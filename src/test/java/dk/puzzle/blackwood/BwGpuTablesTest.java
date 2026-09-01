@@ -35,7 +35,8 @@ class BwGpuTablesTest {
                 solver.corners, solver.leftSides, solver.topSides,
                 solver.rightSidesWithoutBreaks, solver.rightSidesWithBreaks,
                 solver.middlesNoBreak, solver.middlesWithBreak,
-                solver.southStart, solver.westStart, solver.start
+                solver.southStart, solver.westStart, solver.start,
+                solver.hint208, solver.hint255, solver.hint181, solver.hint249
         };
     }
 

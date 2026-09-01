@@ -5,7 +5,12 @@ import java.util.List;
 
 public final class BwGpuTables {
 
-    public static final int NUM_TABLES = 10;
+    // 10 -> 14 on 2026-09-01: added one CSR table per non-center Eternity II clue piece (208, 255,
+    // 181, 249 -- see BlackwoodSolver.HINT_PINS for the full derivation). Changing this changes the
+    // size of the __constant__ c_csrOffset/c_csrCount arrays in SolveBlackwoodKernel.cu, which is a
+    // compile-time #define NUM_TABLES there -- the two MUST be kept equal, and the .ptx rebuilt
+    // (build-kernel.ps1) whenever this changes. Nothing enforces that automatically.
+    public static final int NUM_TABLES = 14;
     public static final int KEY_SPACE = 529;
 
     public static final int TABLE_CORNERS = 0;
@@ -18,6 +23,10 @@ public final class BwGpuTables {
     public static final int TABLE_SOUTH_START = 7;
     public static final int TABLE_WEST_START = 8;
     public static final int TABLE_START = 9;
+    public static final int TABLE_HINT_208 = 10;
+    public static final int TABLE_HINT_255 = 11;
+    public static final int TABLE_HINT_181 = 12;
+    public static final int TABLE_HINT_249 = 13;
 
     public static final int TABLE_UNUSED_ROW0 = -1;
 
@@ -75,7 +84,8 @@ public final class BwGpuTables {
                 solver.corners, solver.leftSides, solver.topSides,
                 solver.rightSidesWithoutBreaks, solver.rightSidesWithBreaks,
                 solver.middlesNoBreak, solver.middlesWithBreak,
-                solver.southStart, solver.westStart, solver.start
+                solver.southStart, solver.westStart, solver.start,
+                solver.hint208, solver.hint255, solver.hint181, solver.hint249
         };
     }
 
