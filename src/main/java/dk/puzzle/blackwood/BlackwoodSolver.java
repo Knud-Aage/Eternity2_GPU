@@ -48,30 +48,38 @@ public class BlackwoodSolver {
     /**
      * The official Eternity II clue: piece number, board position (0-indexed), and required
      * rotation. Position and rotation were NOT taken from any public writeup -- they were
-     * independently re-derived 2026-09-01 and cross-checked three ways: (1) the position for each
-     * piece matches a comment recovered from the retired EternitySolver.java, which recorded these
-     * for an actually-running solver; (2) the position also matches a live user readout of bucas's
-     * own "Clues" preset; (3) the rotation was derived by translating each piece's raw Blackwood
-     * colours into TheSil's colour space (via {@code BLACKWOOD_TO_THESIL}) and finding which
-     * rotation of that translation reproduces TheSil's own raw pieces.csv entry for the same piece
-     * -- this produced a CONSTANT +2 offset with zero exceptions across all 4 non-center pieces,
-     * and, as a blind check, predicts rotation 2 for the center (139) too, exactly matching the
-     * `rotations() == 2` filter already live below -- which this derivation did not use as an input.
-     * Non-center hints do not have the center's westStart/southStart-style neighbour pre-filtering
-     * (see their own comment below): whether any of these 4 need the same treatment depends on
-     * where each sits in BwUtil.getBoardOrder() relative to its neighbours, which has not been
-     * checked. If thrashing shows up right around one of these positions, that is the first thing
-     * to look at.
+     * independently re-derived 2026-09-01.
+     * <p><b>2026-09-01 correction:</b> the initial derivation swapped 208 with 181 and 255 with
+     * 249 -- each pair's two POSITIONS were correct as a set, but which piece went with which of
+     * the two was backwards. Confirmed via bucas's own "Clues" preset, which encodes an explicit
+     * {@code board_pieces} piece-number-per-cell list (no colour decoding involved, unlike
+     * {@code board_edges}) -- searching it directly for these 5 piece numbers gives their true
+     * positions unambiguously. The bug was caught because it made both wrongly-placed pieces
+     * nearly unplaceable: GPU search plateaued hard at depth 200 and the CPU/C# ports couldn't get
+     * past depth 188 (181's old, wrong cell) in any attempt. Rotations are unaffected by this fix
+     * -- they were derived per PIECE, not per position (see the retired EternitySolver.java's
+     * {@code exactHintIds}/{@code exactHintRots} arrays, which pair each rotation with a piece
+     * number), so relocating a piece to its correct cell keeps its already-derived rotation.
+     * Rotation itself was cross-checked two ways when first derived: (1) it was translated by
+     * finding a CONSTANT +2 offset between TheSil's colour space and Blackwood's raw one (via
+     * {@code BLACKWOOD_TO_THESIL}), holding with zero exceptions across all 4 non-center pieces;
+     * (2) as a blind check, the same +2 offset predicts rotation 2 for the center (139) too,
+     * exactly matching the `rotations() == 2` filter already live below, which that derivation did
+     * not use as an input. A THIRD, independent re-verification of rotation (decoding the "Clues"
+     * preset's own board_edges colours) was attempted alongside the position fix above but hit an
+     * unresolved colour-scheme mismatch even on the known-good center piece, so it could not
+     * confirm or refute rotation -- position is solid, rotation rests on the original two-way
+     * check only.
      */
     private record HintPin(int pieceNumber, int row, int col, int rotation) {
     }
 
     private static final List<HintPin> HINT_PINS = List.of(
             new HintPin(139, 7, 7, 2),   // center
-            new HintPin(208, 2, 2, 2),
-            new HintPin(255, 2, 13, 2),
-            new HintPin(181, 13, 2, 2),
-            new HintPin(249, 13, 13, 3));
+            new HintPin(181, 2, 2, 2),
+            new HintPin(249, 2, 13, 3),
+            new HintPin(208, 13, 2, 2),
+            new HintPin(255, 13, 13, 2));
     private static final Pattern LABELLED_NAME = Pattern.compile("^Errors(\\d+)_Base(\\d+)_.*_RawBoard\\.txt$");
     private static final Path COMPLETED_LINKS_LOG = Path.of("logs", "java_port_completed_links.log");
 
@@ -212,13 +220,13 @@ public class BlackwoodSolver {
             } else if (row == 7 && col == 7) {
                 masterPieceLookup[row * 16 + col] = start;
             } else if (row == 2 && col == 2) {
-                masterPieceLookup[row * 16 + col] = hint208;
-            } else if (row == 2 && col == 13) {
-                masterPieceLookup[row * 16 + col] = hint255;
-            } else if (row == 13 && col == 2) {
                 masterPieceLookup[row * 16 + col] = hint181;
-            } else if (row == 13 && col == 13) {
+            } else if (row == 2 && col == 13) {
                 masterPieceLookup[row * 16 + col] = hint249;
+            } else if (row == 13 && col == 2) {
+                masterPieceLookup[row * 16 + col] = hint208;
+            } else if (row == 13 && col == 13) {
+                masterPieceLookup[row * 16 + col] = hint255;
             } else if (row == 7 && col == 6) {
                 masterPieceLookup[row * 16 + col] = westStart;
             } else if (row == 6 && col == 7) {

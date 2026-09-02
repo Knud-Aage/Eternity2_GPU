@@ -79,10 +79,10 @@ class BlackwoodSolverHintPinsTest {
         }
         Expected[] expected = {
                 new Expected(7, 7, solver.start, 139),
-                new Expected(2, 2, solver.hint208, 208),
-                new Expected(2, 13, solver.hint255, 255),
-                new Expected(13, 2, solver.hint181, 181),
-                new Expected(13, 13, solver.hint249, 249),
+                new Expected(2, 2, solver.hint181, 181),
+                new Expected(2, 13, solver.hint249, 249),
+                new Expected(13, 2, solver.hint208, 208),
+                new Expected(13, 13, solver.hint255, 255),
         };
         for (Expected e : expected) {
             BwRotatedPiece[][] actual = solver.masterPieceLookup[e.row() * 16 + e.col()];
