@@ -189,8 +189,12 @@ public class BlackwoodSolver {
         southStart = buildTable(middlePieces, false, rp -> rp.topSide() == 6, rand);
         westStart = buildTable(middlePieces, false, rp -> rp.rightSide() == 11, rand);
         start = buildTable(List.of(hintPiece.apply(139)), false, rp -> rp.rotations() == 2, rand);
-        hint208 = buildTable(List.of(hintPiece.apply(208)), false, rp -> rp.rotations() == 2, rand);
-        hint255 = buildTable(List.of(hintPiece.apply(255)), false, rp -> rp.rotations() == 2, rand);
+        // 208 and 255 get allowBreaks=true (see BwUtil.HINT_BREAK_INDEXES) -- they're the two
+        // early, narrow-gate hints (fill-steps 34/45) that were plateauing hard. This lets either
+        // side of the pinned piece's required (west,south) mismatch instead of needing both
+        // simultaneously. 181/249/start are untouched -- they don't show this problem.
+        hint208 = buildTable(List.of(hintPiece.apply(208)), true, rp -> rp.rotations() == 2, rand);
+        hint255 = buildTable(List.of(hintPiece.apply(255)), true, rp -> rp.rotations() == 2, rand);
         hint181 = buildTable(List.of(hintPiece.apply(181)), false, rp -> rp.rotations() == 2, rand);
         hint249 = buildTable(List.of(hintPiece.apply(249)), false, rp -> rp.rotations() == 3, rand);
 

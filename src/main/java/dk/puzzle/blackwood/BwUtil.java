@@ -32,6 +32,22 @@ public final class BwUtil {
     public static final int[] BREAK_INDEXES_ALLOWED = {201, 206, 211, 216, 221, 225, 229, 233, 237, 239};
     public static final int MAX_HEURISTIC_INDEX = 160;
 
+    // 2026-09-02 experiment (already deployed to the C# solver): 208 and 255 are pinned at
+    // fill-steps 34 and 45 respectively -- both well before the general break schedule opens at
+    // 201 -- with a single-candidate table each, so if the (west,south) colours the search happens
+    // to produce there don't exactly match what the pinned piece needs, that branch dead-ends with
+    // zero fallback. This grants each of those two hints exactly one break of budget, letting
+    // hint208/hint255's OWN candidate tables (built with allowBreaks=true, see
+    // BlackwoodSolver.prepare()) accept a one-side match instead of requiring both sides
+    // simultaneously.
+    //
+    // Deliberately kept OUT of BREAK_INDEXES_ALLOWED: that array also drives firstBreakIndex(),
+    // which every ordinary (non-hint) cell uses to decide middlesNoBreak vs middlesWithBreak.
+    // Folding 34/45 into it would have dropped that cutoff from 201 to 34, silently making ~150+
+    // unrelated cells break-tolerant too. This array feeds ONLY getBreakArray()'s cumulative
+    // budget, never firstBreakIndex().
+    public static final int[] HINT_BREAK_INDEXES = {34, 45};
+
     public static final int[] BLACKWOOD_TO_THESIL = {
             0, 1, 6, 22, 17, 3, 8, 10, 12, 4, 7, 9, 18, 5, 15, 11, 20, 2, 14, 16, 19, 13, 21
     };
@@ -182,12 +198,16 @@ public final class BwUtil {
         int[] arr = new int[256];
         int cumulative = 0;
         for (int i = 0; i < 256; i++) {
+            boolean unlockedHere = false;
             for (int allowed : BREAK_INDEXES_ALLOWED) {
-                if (allowed == i) {
-                    cumulative++;
-                    break;
+                if (allowed == i) { unlockedHere = true; break; }
+            }
+            if (!unlockedHere) {
+                for (int allowed : HINT_BREAK_INDEXES) {
+                    if (allowed == i) { unlockedHere = true; break; }
                 }
             }
+            if (unlockedHere) cumulative++;
             arr[i] = cumulative;
         }
         return arr;
