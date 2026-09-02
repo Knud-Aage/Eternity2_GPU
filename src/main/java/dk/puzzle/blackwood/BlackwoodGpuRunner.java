@@ -225,7 +225,7 @@ public class BlackwoodGpuRunner {
     private static final int SCORING_TRIALS = 5000;
     private static final int HARVEST_INTERVAL = 300;
     private static final int HARVEST_SAMPLE = 100;
-    private static final int HARVEST_MIN_DEPTH = 240;
+    private static final int HARVEST_MIN_DEPTH = 219;
     /** Boards already scored, so a stable population isn't re-scored every harvest. */
     private static final Set<String> harvestedFingerprints = new HashSet<>();
     private static final int HARVEST_MEMORY_CAP = 200_000;
