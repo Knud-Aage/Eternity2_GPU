@@ -45,6 +45,17 @@ public class BlackwoodSolver {
     private static final int ATTEMPTS_PER_WORKER_PER_BATCH = 5;
     private static final int SCORING_TRIALS = 5000;
 
+    // 2026-09-02: runtime switch for the 4 non-center official clues, so both modes can run from
+    // one branch instead of maintaining separate "hints"/"no hints" branches. Defaults OFF to
+    // match main/master's pre-existing behaviour -- set ETERNITY_NON_CENTER_HINTS=true to enable.
+    // The center pin (139) predates this switch and this whole 4-hint feature; it stays
+    // unconditional either way, matching what main/master already did before any of this.
+    // Deliberately NOT final -- BlackwoodSolverHintPinsTest overrides it for the duration of that
+    // test class (System.getenv() can't be overridden from within the same JVM), then restores
+    // the default in @AfterAll so it can't leak into other test classes.
+    static boolean NON_CENTER_HINTS_ENABLED =
+            "true".equalsIgnoreCase(System.getenv("ETERNITY_NON_CENTER_HINTS"));
+
     /**
      * The official Eternity II clue: piece number, board position (0-indexed), and required
      * rotation. Position and rotation were NOT taken from any public writeup -- they were
@@ -159,7 +170,12 @@ public class BlackwoodSolver {
 
         List<BwPiece> cornerPieces = boardPieces.stream().filter(p -> p.pieceType() == 2).toList();
         List<BwPiece> sidePieces = boardPieces.stream().filter(p -> p.pieceType() == 1).toList();
-        Set<Integer> hintPieceNumbers = HINT_PINS.stream().map(HintPin::pieceNumber).collect(java.util.stream.Collectors.toSet());
+        // Center (139) is excluded from the general pool unconditionally, matching main/master's
+        // pre-existing behaviour. The other 4 are only pulled out when the switch is on --
+        // otherwise they must stay available to the general search like any other middle piece.
+        Set<Integer> hintPieceNumbers = NON_CENTER_HINTS_ENABLED
+                ? HINT_PINS.stream().map(HintPin::pieceNumber).collect(java.util.stream.Collectors.toSet())
+                : Set.of(139);
         List<BwPiece> middlePieces = boardPieces.stream().filter(p -> p.pieceType() == 0 && !hintPieceNumbers.contains(p.pieceNumber())).toList();
         java.util.function.Function<Integer, BwPiece> hintPiece = num ->
                 boardPieces.stream().filter(p -> p.pieceNumber() == num).findFirst()
@@ -223,13 +239,13 @@ public class BlackwoodSolver {
                 masterPieceLookup[row * 16 + col] = leftSides;
             } else if (row == 7 && col == 7) {
                 masterPieceLookup[row * 16 + col] = start;
-            } else if (row == 2 && col == 2) {
+            } else if (NON_CENTER_HINTS_ENABLED && row == 2 && col == 2) {
                 masterPieceLookup[row * 16 + col] = hint181;
-            } else if (row == 2 && col == 13) {
+            } else if (NON_CENTER_HINTS_ENABLED && row == 2 && col == 13) {
                 masterPieceLookup[row * 16 + col] = hint249;
-            } else if (row == 13 && col == 2) {
+            } else if (NON_CENTER_HINTS_ENABLED && row == 13 && col == 2) {
                 masterPieceLookup[row * 16 + col] = hint208;
-            } else if (row == 13 && col == 13) {
+            } else if (NON_CENTER_HINTS_ENABLED && row == 13 && col == 13) {
                 masterPieceLookup[row * 16 + col] = hint255;
             } else if (row == 7 && col == 6) {
                 masterPieceLookup[row * 16 + col] = westStart;

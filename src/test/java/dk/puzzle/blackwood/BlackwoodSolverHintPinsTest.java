@@ -1,5 +1,6 @@
 package dk.puzzle.blackwood;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -16,6 +17,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * exists because that derivation is exactly the kind of thing that can be silently wrong: it
  * asserts each pin resolves to a real, single, correctly-rotated candidate through the solver's
  * OWN matching logic, not just that the wiring compiles and nothing throws.
+ *
+ * <p>2026-09-02: the 4 non-center hints are now behind {@code BlackwoodSolver.NON_CENTER_HINTS_ENABLED},
+ * off by default -- explicitly turned on here for the duration of this test class (and restored
+ * after) since these tests are specifically about that feature. See
+ * {@code BlackwoodSolverNoHintsTest} for coverage of the default (off) state.
  */
 class BlackwoodSolverHintPinsTest {
 
@@ -24,8 +30,14 @@ class BlackwoodSolverHintPinsTest {
 
     @BeforeAll
     static void prepareSolver() throws Exception {
+        BlackwoodSolver.NON_CENTER_HINTS_ENABLED = true;
         solver = new BlackwoodSolver(190, Path.of("build", "test-output"), 1, PIECES_PATH);
         solver.prepare();
+    }
+
+    @AfterAll
+    static void restoreDefault() {
+        BlackwoodSolver.NON_CENTER_HINTS_ENABLED = false;
     }
 
     private static void assertPin(BwRotatedPiece[][] table, int expectedPiece, int expectedRotation) {

@@ -275,9 +275,9 @@ public class BlackwoodGpuRunner {
         long stepBudget = INITIAL_STEP_BUDGET;
         loadSavedBoardIndex(outputDir);
 
-        logger.info("BlackwoodGpuRunner starting. numThreads={}, initialStepBudget={}, saveThreshold={}, epochLaunches={}, tableVariants={}, resumedHighScore={}, seedingEnabled={}, sharedCacheEnabled={}, breakIndexesAllowed={}",
+        logger.info("BlackwoodGpuRunner starting. numThreads={}, initialStepBudget={}, saveThreshold={}, epochLaunches={}, tableVariants={}, resumedHighScore={}, seedingEnabled={}, sharedCacheEnabled={}, nonCenterHintsEnabled={}, breakIndexesAllowed={}",
                 NUM_THREADS, INITIAL_STEP_BUDGET, SAVE_THRESHOLD, EPOCH_LAUNCHES, NUM_TABLE_VARIANTS, currentHighScore, SEEDING_ENABLED, SHARED_CACHE_ENABLED,
-                java.util.Arrays.toString(BwUtil.BREAK_INDEXES_ALLOWED));
+                BlackwoodSolver.NON_CENTER_HINTS_ENABLED, java.util.Arrays.toString(BwUtil.BREAK_INDEXES_ALLOWED));
         if (!NUM_THREADS_EXPLICIT) {
             logger.warn("ETERNITY_GPU_NUM_THREADS is not set -- running with the conservative code "
                     + "default of {} threads, not the production-tuned 16384 (see README). Launch via "
