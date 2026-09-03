@@ -67,6 +67,42 @@ public class HoleSolver {
     // instead of hanging forever.
     private static final long STEP_BUDGET_PER_REGION = 200_000_000L;
 
+    // 2026-09-04: the repair passes below rearrange pieces freely, which silently
+    // moved official clue pieces off their pinned cells -- 10 of 11 saved boards from
+    // the first hints-enabled runs had a clue displaced (usually 255), which
+    // disqualifies the board from the five-clue regime even though the solver itself
+    // had placed every clue correctly. Two distinct routes caused it: the clue cell
+    // being swallowed by a conflict region (RegionSolver then re-places it), and the
+    // clue cell still being EMPTY when the solver stopped (MCV refill then fills it
+    // with whatever scores best). Both are closed below.
+    //
+    // Gated as a unit on the same env var the solvers use, so a run with hints off --
+    // and any CLI use on an arbitrary external board that has no clues of its own --
+    // behaves exactly as before. This matches ConflictReducer.isLocked()'s existing
+    // "centre and hints are locked as a unit" semantics, which this now switches on.
+    static boolean NON_CENTER_HINTS_ENABLED =
+            "true".equalsIgnoreCase(System.getenv("ETERNITY_NON_CENTER_HINTS"));
+
+    /**
+     * One official clue: the cell it must occupy in THIS class's top-down indexing
+     * (row 0 = north/top, index = row * 16 + col), its physical piece number as
+     * printed in the layout files, and its rotation in clockwise degrees from the
+     * pieces.csv reference orientation.
+     *
+     * <p>These five cells are the same ones ConflictReducer's own isLocked()
+     * already knows about (135/34/45/210/221). The piece numbers and rotations here
+     * were read back off the solver's own pinned partial board, where the pins are
+     * enforced by construction, rather than re-derived independently.</p>
+     */
+    private record CluePin(int cell, int physicalPiece, int rotationDegrees) {}
+
+    private static final List<CluePin> CLUE_PINS = List.of(
+            new CluePin(135, 139, 270), // centre / mandatory starter piece
+            new CluePin(34, 208, 270),
+            new CluePin(45, 255, 270),
+            new CluePin(210, 181, 270),
+            new CluePin(221, 249, 0));
+
     public static void main(String[] args) {
         if (args.length < 1) {
             System.out.println("Usage: HoleSolver <bucas link or raw board_edges string> [trials] [baseLabel]");
@@ -169,6 +205,11 @@ public class HoleSolver {
     public static ConflictSolveResult solveConflicts(int[] board, PieceInventory inventory, boolean verbose, int trials) {
         CompatibilityIndex compat = new CompatibilityIndex(inventory.allOrientations, inventory.physicalMapping);
 
+        // Copy first: applyCluePins may place a still-missing clue piece, and the
+        // caller's array must not change under it.
+        board = Arrays.copyOf(board, 256);
+        boolean[] pinned = applyCluePins(board, inventory, verbose);
+
         int[] physicalIdAt = new int[256];
         Arrays.fill(physicalIdAt, -1);
         int emptyCells = 0;
@@ -198,13 +239,16 @@ public class HoleSolver {
         // A region to resolve is either a real edge mismatch OR a genuinely
         // empty cell still waiting to be filled — both need the exact search
         // below, just with a different starting pool (see below).
+        // A pinned clue cell never enters a region, so RegionSolver can't clear and
+        // re-place it. The conflict itself is still resolvable -- the neighbour on the
+        // other side of the mismatched seam is not pinned and does enter a region.
         boolean[] inHole = new boolean[256];
         for (int[] c : conflicts) {
-            inHole[c[0]] = true;
-            if (c[1] != -1) inHole[c[1]] = true;
+            if (!pinned[c[0]]) inHole[c[0]] = true;
+            if (c[1] != -1 && !pinned[c[1]]) inHole[c[1]] = true;
         }
         for (int i = 0; i < 256; i++) {
-            if (board[i] == -1) inHole[i] = true;
+            if (board[i] == -1 && !pinned[i]) inHole[i] = true;
         }
 
         List<List<Integer>> regions = connectedComponents(inHole);
@@ -310,11 +354,18 @@ public class HoleSolver {
             // nudge one piece at a time and easily gets stuck — a full
             // clear-and-refill can reach rearrangements a single swap can't.
             // Finish with a rotation+swap polish pass over the result.
-            ConflictReducer reducer = new ConflictReducer(inventory, false);
+            // lockCenter=true makes ConflictReducer's rotation and swap repair skip the
+            // five clue cells (its isLocked() already knows them). Passed as the hints
+            // flag so a no-hints or arbitrary-board run keeps the previous behaviour.
+            ConflictReducer reducer = new ConflictReducer(inventory, NON_CENTER_HINTS_ENABLED);
             int conflictsBefore = reducer.countConflicts(finalBoard);
 
             repaired = Arrays.copyOf(finalBoard, 256);
-            for (int cell : unsolvedCells) repaired[cell] = -1;
+            // Pinned cells are excluded from regions above so they shouldn't appear here
+            // at all; the guard keeps that guarantee local rather than action-at-a-distance.
+            for (int cell : unsolvedCells) {
+                if (!pinned[cell]) repaired[cell] = -1;
+            }
 
             repaired = reducer.mcvRestartFill(repaired, trials);
             int afterFill = reducer.countConflicts(repaired);
@@ -566,6 +617,75 @@ public class HoleSolver {
         return board;
     }
 
+    /**
+     * Marks the five official clue cells as untouchable by the repair passes, placing a
+     * clue piece first if the solver stopped before reaching its cell (the common case:
+     * at depth 247 cell 45 is still empty, and MCV refill would otherwise fill it with
+     * whatever scores best, quietly costing five-clue compliance).
+     *
+     * <p>Only forces a placement where doing so is unambiguous -- the cell is empty AND
+     * the clue piece is unused. A board that already disagrees with the official clue
+     * (an arbitrary external board, say) is left exactly as-is and simply not pinned,
+     * since silently rewriting someone's board would be worse than not enforcing.</p>
+     *
+     * @return per-cell mask of what must not be moved; all-false when hints are off.
+     */
+    private static boolean[] applyCluePins(int[] board, PieceInventory inventory, boolean verbose) {
+        boolean[] pinned = new boolean[256];
+        if (!NON_CENTER_HINTS_ENABLED) return pinned;
+
+        for (CluePin pin : CLUE_PINS) {
+            int oriented = orientedPieceFor(inventory, pin.physicalPiece(), pin.rotationDegrees());
+            if (oriented == -1) {
+                if (verbose) {
+                    System.out.println("WARNING: clue piece " + pin.physicalPiece() + " at rotation " +
+                            pin.rotationDegrees() + " isn't in this piece dataset; leaving cell " +
+                            pin.cell() + " unpinned.");
+                }
+                continue;
+            }
+            if (board[pin.cell()] == oriented) {
+                pinned[pin.cell()] = true;
+                continue;
+            }
+            if (board[pin.cell()] == -1 && !isPiecePlaced(board, inventory, pin.physicalPiece())) {
+                board[pin.cell()] = oriented;
+                pinned[pin.cell()] = true;
+                if (verbose) {
+                    System.out.println("Clue pin: placed piece " + pin.physicalPiece() + " at cell " +
+                            pin.cell() + " (rotation " + pin.rotationDegrees() + ").");
+                }
+                continue;
+            }
+            if (verbose) {
+                System.out.println("WARNING: cell " + pin.cell() + " doesn't hold official clue piece " +
+                        pin.physicalPiece() + " and can't be pinned without rewriting the board; " +
+                        "this board is not five-clue compliant.");
+            }
+        }
+        return pinned;
+    }
+
+    /** Packed orientation for a physical piece number (as printed in the layout files) at a rotation, or -1. */
+    private static int orientedPieceFor(PieceInventory inventory, int physicalPiece, int rotationDegrees) {
+        int physId = physicalPiece - 1; // physicalMapping is 0-based; layout files print it +1
+        for (int oi = 0; oi < 1024; oi++) {
+            if (inventory.physicalMapping[oi] == physId && (oi % 4) * 90 == rotationDegrees) {
+                return inventory.allOrientations[oi];
+            }
+        }
+        return -1;
+    }
+
+    private static boolean isPiecePlaced(int[] board, PieceInventory inventory, int physicalPiece) {
+        int physId = physicalPiece - 1;
+        for (int i = 0; i < 256; i++) {
+            if (board[i] == -1) continue;
+            if (findPhysicalId(inventory, board[i]) == physId) return true;
+        }
+        return false;
+    }
+
     private static int findPhysicalId(PieceInventory inventory, int packedPiece) {
         for (int oi = 0; oi < 1024; oi++) {
             if (inventory.allOrientations[oi] == packedPiece) {
@@ -580,7 +700,9 @@ public class HoleSolver {
     // ------------------------------------------------------------------
 
     /** Each result entry is {cellIndex, neighbourIndex} for an internal mismatch, or {cellIndex, -1} for a border violation. */
-    private static List<int[]> findConflicts(int[] board) {
+    // Package-private rather than private so HoleSolverCluePinsTest can assert against the
+    // exact conflict count the saved filenames are derived from.
+    static List<int[]> findConflicts(int[] board) {
         List<int[]> conflicts = new ArrayList<>();
         for (int row = 0; row < H; row++) {
             for (int col = 0; col < W; col++) {
