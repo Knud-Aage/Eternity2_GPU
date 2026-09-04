@@ -103,6 +103,31 @@ public class HoleSolver {
             new CluePin(210, 181, 270),
             new CluePin(221, 249, 0));
 
+    /** matchedCount is out of CLUE_PINS.size() (5); failedPieces lists the physical piece numbers not at their official cell/rotation. */
+    public record FiveClueCompliance(int matchedCount, List<Integer> failedPieces) {
+        public boolean isFullyCompliant() {
+            return failedPieces.isEmpty();
+        }
+    }
+
+    /**
+     * Checks a completed board against the 5 official clue positions directly -- independent of
+     * applyCluePins()/repair, so it tells you what actually ended up on the board rather than what
+     * the repair pass intended. Added 2026-09-04 alongside unRotateForExport() to give ongoing,
+     * per-board visibility into whether the rotated-search-plus-reconciliation pipeline is still
+     * producing genuinely five-clue-compliant boards, instead of relying on manual spot checks.
+     */
+    public static FiveClueCompliance checkFiveClueCompliance(int[] board, PieceInventory inventory) {
+        List<Integer> failed = new ArrayList<>();
+        for (CluePin pin : CLUE_PINS) {
+            int oriented = orientedPieceFor(inventory, pin.physicalPiece(), pin.rotationDegrees());
+            if (board[pin.cell()] != oriented) {
+                failed.add(pin.physicalPiece());
+            }
+        }
+        return new FiveClueCompliance(CLUE_PINS.size() - failed.size(), failed);
+    }
+
     public static void main(String[] args) {
         if (args.length < 1) {
             System.out.println("Usage: HoleSolver <bucas link or raw board_edges string> [trials] [baseLabel]");

@@ -480,6 +480,7 @@ public class BlackwoodSolver {
             HoleSolver.ConflictSolveResult result = HoleSolver.solveConflicts(decoded, inventory, false, SCORING_TRIALS);
             int[] completed = result.bestBoard();
             int conflicts = countConflicts(completed);
+            String fiveClueTag = fiveClueComplianceLogTag(completed);
 
             boolean exact = result.repairedBoard() == null;
             boolean budgetExhausted = result.anyRegionBudgetExhausted();
@@ -487,8 +488,8 @@ public class BlackwoodSolver {
             int keepThreshold = (bestOnDisk == Integer.MAX_VALUE)
                     ? Integer.MAX_VALUE : Math.max(ALWAYS_SAVE_AT_OR_BELOW, bestOnDisk + 1);
             if (conflicts > keepThreshold) {
-                logger.info("Depth record at {} pieces completed to {} conflicts -- not within 1 of best-on-disk ({}), not saving, exact={}, budgetExhausted={}",
-                        maxSolveIndex, conflicts, bestOnDisk, exact, budgetExhausted);
+                logger.info("Depth record at {} pieces completed to {} conflicts -- not within 1 of best-on-disk ({}), not saving, exact={}, budgetExhausted={}, fiveClueCompliant={}",
+                        maxSolveIndex, conflicts, bestOnDisk, exact, budgetExhausted, fiveClueTag);
                 return;
             }
 
@@ -505,7 +506,7 @@ public class BlackwoodSolver {
                     inventory, result.finalBoard(), result.repairedBoard());
             HoleSolver.writeRawBoardFile(outputDir.resolve(prefix + "_RawBoard.txt").toString(), inventory, completed);
             Files.writeString(outputDir.resolve(prefix + "_baseboard.txt"), boardString);
-            logger.info("Saved new personal best [depth-record]: {} pieces, {} conflicts -> {}, exact={}, budgetExhausted={}", maxSolveIndex, conflicts, prefix, exact, budgetExhausted);
+            logger.info("Saved new personal best [depth-record]: {} pieces, {} conflicts -> {}, exact={}, budgetExhausted={}, fiveClueCompliant={}", maxSolveIndex, conflicts, prefix, exact, budgetExhausted, fiveClueTag);
             appendCompletedLink(prefix, conflicts, maxSolveIndex, completedLink);
             DriveUploader.uploadRecord(prefix, conflicts, completedLink, "Java-CPU");
 
@@ -554,6 +555,13 @@ public class BlackwoodSolver {
             System.err.println("Ignoring invalid " + name + "=" + v + ", using default " + defaultValue);
             return defaultValue;
         }
+    }
+
+    /** "n/a" when rotation is off, "5/5" when fully compliant, else "N/5 (failed=[...])" naming the physical pieces. */
+    private String fiveClueComplianceLogTag(int[] completed) {
+        if (ROTATE_INSTANCE_DEGREES == 0) return "n/a";
+        HoleSolver.FiveClueCompliance c = HoleSolver.checkFiveClueCompliance(completed, inventory);
+        return c.isFullyCompliant() ? "5/5" : c.matchedCount() + "/5 (failed=" + c.failedPieces() + ")";
     }
 
     private static int countConflicts(int[] board) {

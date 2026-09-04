@@ -625,6 +625,11 @@ public class BlackwoodGpuRunner {
             HoleSolver.ConflictSolveResult result = HoleSolver.solveConflicts(decoded, inventory, false, SCORING_TRIALS);
             int[] completed = result.bestBoard();
             int conflicts = countConflicts(completed);
+            // Checked directly against the board, independent of repair's own bookkeeping, so this
+            // is ground truth on whether the rotated-search-plus-reconciliation pipeline is still
+            // working -- not just an assumption carried forward from unRotateForExport(). "n/a" when
+            // rotation is off, since applyCluePins() alone has always handled that case reliably.
+            String fiveClueTag = fiveClueComplianceLogTag(completed, inventory);
 
             int bestOnDisk = bestConflictsOnDisk(outputDir);
             int keepThreshold = (bestOnDisk == Integer.MAX_VALUE)
@@ -635,11 +640,11 @@ public class BlackwoodGpuRunner {
                 // Harvest rejects most of what it scores by design, so this is the dominant line
                 // volume in this log once enabled at info level.
                 if (depthRecord) {
-                    logger.info("Depth record at {} pieces completed to {} conflicts -- not within 1 of best-on-disk ({}), not saving, exact={}, budgetExhausted={}",
-                            maxSolveIndex, conflicts, bestOnDisk, exact, budgetExhausted);
+                    logger.info("Depth record at {} pieces completed to {} conflicts -- not within 1 of best-on-disk ({}), not saving, exact={}, budgetExhausted={}, fiveClueCompliant={}",
+                            maxSolveIndex, conflicts, bestOnDisk, exact, budgetExhausted, fiveClueTag);
                 } else {
-                    logger.info("Harvested board at {} pieces completed to {} conflicts (best-on-disk {}), not saving, exact={}, budgetExhausted={}",
-                            maxSolveIndex, conflicts, bestOnDisk, exact, budgetExhausted);
+                    logger.info("Harvested board at {} pieces completed to {} conflicts (best-on-disk {}), not saving, exact={}, budgetExhausted={}, fiveClueCompliant={}",
+                            maxSolveIndex, conflicts, bestOnDisk, exact, budgetExhausted, fiveClueTag);
                 }
                 return conflicts;
             }
@@ -664,8 +669,8 @@ public class BlackwoodGpuRunner {
                     inventory, result.finalBoard(), result.repairedBoard());
             HoleSolver.writeRawBoardFile(outputDir.resolve(prefix + "_RawBoard.txt").toString(), inventory, completed);
             Files.writeString(outputDir.resolve(prefix + "_baseboard.txt"), boardString);
-            logger.info("SAVED [{}]: {} pieces, {} conflicts -> {}, exact={}, budgetExhausted={}",
-                    depthRecord ? "depth-record" : "harvest", maxSolveIndex, conflicts, prefix, exact, budgetExhausted);
+            logger.info("SAVED [{}]: {} pieces, {} conflicts -> {}, exact={}, budgetExhausted={}, fiveClueCompliant={}",
+                    depthRecord ? "depth-record" : "harvest", maxSolveIndex, conflicts, prefix, exact, budgetExhausted, fiveClueTag);
             logger.info("COMPLETED_LINK {}_RawBoard.txt: {}", prefix, completedLink);
             appendCompletedLink(prefix, conflicts, maxSolveIndex, completedLink);
             DriveUploader.uploadRecord(prefix, conflicts, completedLink, "GPU");
@@ -713,6 +718,13 @@ public class BlackwoodGpuRunner {
             }
         }
         return conflicts;
+    }
+
+    /** "n/a" when rotation is off, "5/5" when fully compliant, else "N/5 (failed=[...])" naming the physical pieces. */
+    private static String fiveClueComplianceLogTag(int[] completed, PieceInventory inventory) {
+        if (BlackwoodSolver.ROTATE_INSTANCE_DEGREES == 0) return "n/a";
+        HoleSolver.FiveClueCompliance c = HoleSolver.checkFiveClueCompliance(completed, inventory);
+        return c.isFullyCompliant() ? "5/5" : c.matchedCount() + "/5 (failed=" + c.failedPieces() + ")";
     }
 
     static int bestConflictsOnDisk(Path outputDir) {
