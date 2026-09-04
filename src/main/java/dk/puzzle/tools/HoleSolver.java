@@ -732,6 +732,40 @@ public class HoleSolver {
         return conflicts;
     }
 
+    /**
+     * Rotates a full board cwDegrees (multiple of 90) clockwise: repositions every placed cell via
+     * the standard grid quarter-turn (r,c) -> (c, H-1-r) and re-encodes each piece's own packed
+     * orientation to match via {@link PieceUtils#rotate}, which is a single 90-degree-CW piece
+     * rotation applied `turns` times per cell -- no PieceInventory lookup needed, since board[]
+     * cells already hold the packed N/E/S/W int directly. Used to un-rotate a board found under
+     * BlackwoodSolver's ROTATE_INSTANCE_DEGREES experiment back to the true official clue
+     * positions/orientations before export. Round-trip-verified: rotating a real, complete,
+     * bucas-verified board by 90/180/270 preserves findConflicts()'s count exactly at every step.
+     */
+    static int[] rotateBoardCw(int[] board, int cwDegrees) {
+        if (cwDegrees % 90 != 0) {
+            throw new IllegalArgumentException("cwDegrees must be a multiple of 90, got: " + cwDegrees);
+        }
+        int turns = ((cwDegrees / 90) % 4 + 4) % 4;
+        int[] result = new int[256];
+        Arrays.fill(result, -1);
+        for (int row = 0; row < H; row++) {
+            for (int col = 0; col < W; col++) {
+                int piece = board[row * W + col];
+                if (piece == -1) continue;
+                int r = row, c = col;
+                for (int t = 0; t < turns; t++) {
+                    int nr = c, nc = H - 1 - r;
+                    r = nr;
+                    c = nc;
+                    piece = PieceUtils.rotate(piece);
+                }
+                result[r * W + c] = piece;
+            }
+        }
+        return result;
+    }
+
     private static List<List<Integer>> connectedComponents(boolean[] inHole) {
         boolean[] visited = new boolean[256];
         List<List<Integer>> components = new ArrayList<>();

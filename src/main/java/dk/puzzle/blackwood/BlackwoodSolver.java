@@ -85,12 +85,69 @@ public class BlackwoodSolver {
     private record HintPin(int pieceNumber, int row, int col, int rotation) {
     }
 
-    private static final List<HintPin> HINT_PINS = List.of(
+    private static final List<HintPin> BASE_HINT_PINS = List.of(
             new HintPin(139, 7, 7, 2),   // center
             new HintPin(181, 2, 2, 2),
             new HintPin(249, 2, 13, 3),
             new HintPin(208, 13, 2, 2),
             new HintPin(255, 13, 13, 2));
+
+    // 2026-09-04 experiment, inspired by Igor Pejic's eternity-ii-dfs-solver (github.com/igorpejic/
+    // eternity-ii-dfs-solver): searching the SAME puzzle with the 4 corner hints rotated 90/180/270
+    // around the board explores a different slice of the search tree, since the fixed fill order
+    // interacts differently with the hint constraints at their rotated positions -- reported there
+    // as 4-8x more near-misses per unit compute. Piece pools (corner/edge/middle) and the fill
+    // order itself are untouched: all four rotations of a 16x16 grid map corners->corners,
+    // edges->edges, middles->middles, so ONLY hint cell positions need to move. A board found under
+    // rotation must be rotated back by (360 - ROTATE_INSTANCE_DEGREES) before it satisfies the TRUE
+    // official clue positions -- see BwUtil.rotateBoardCw(). Zero effect when this is 0 (default).
+    //
+    // The center (139) is deliberately EXCLUDED from rotation and always stays pinned at (7,7): a
+    // 16-wide grid has no fixed point under a 90/270 turn (7,7) has no image of itself -- it maps to
+    // (7,8)/(8,8)/(8,7) across the three non-zero rotations -- which would also break westStart/
+    // southStart's hardcoded assumption of sitting directly adjacent to the center cell. This isn't
+    // a guess: it's exactly why comparing the OTHER 4 hints' rotation formula against Igor Pejic's
+    // own hints_rot90.txt/hints_rot270.txt reference data landed 10/10 position matches and 8/10
+    // rotation-index matches, with both misses isolated to piece 139 -- his solver treats the center
+    // as fixed too. That comparison, plus a second independent check (rotating every cell of a real,
+    // complete, bucas-verified 18-conflict board and confirming HoleSolver's findConflicts() reports
+    // an identical count at all three rotations), is what the position/rotation-index formula below
+    // is built from -- not assumed.
+    static int ROTATE_INSTANCE_DEGREES = parseRotateInstanceEnv();
+
+    private static int parseRotateInstanceEnv() {
+        String v = System.getenv("ETERNITY_ROTATE_INSTANCE");
+        if (v == null || v.isBlank()) return 0;
+        int degrees = Integer.parseInt(v.trim());
+        if (degrees != 0 && degrees != 90 && degrees != 180 && degrees != 270) {
+            throw new IllegalArgumentException("ETERNITY_ROTATE_INSTANCE must be 0, 90, 180, or 270, got: " + v);
+        }
+        return degrees;
+    }
+
+    /** BASE_HINT_PINS with the 4 non-center hints rotated by ROTATE_INSTANCE_DEGREES; center (139) never moves. */
+    private static List<HintPin> activeHintPins() {
+        if (ROTATE_INSTANCE_DEGREES == 0) return BASE_HINT_PINS;
+        return BASE_HINT_PINS.stream().map(h -> {
+            if (h.pieceNumber() == 139) return h;
+            // HintPin stores blackwood-internal (bottom-up) row; the verified rotation formula
+            // operates in top-down (bucas/physical_layout) convention -- convert out and back.
+            int topRow = 15 - h.row();
+            int r = topRow, c = h.col();
+            int turns = (ROTATE_INSTANCE_DEGREES / 90) % 4;
+            for (int i = 0; i < turns; i++) {
+                int nr = c, nc = 15 - r;
+                r = nr; c = nc;
+            }
+            int newBlackwoodRow = 15 - r;
+            // Blackwood-internal rotation-index <-> degrees relation, verified against
+            // BASE_HINT_PINS's own 181/208/249/255 entries (index 2 -> 270 deg, index 3 -> 0 deg).
+            int oldDegrees = ((h.rotation() + 1) % 4) * 90;
+            int newDegrees = (oldDegrees + ROTATE_INSTANCE_DEGREES) % 360;
+            int newRotation = (((newDegrees / 90) - 1) + 4) % 4;
+            return new HintPin(h.pieceNumber(), newBlackwoodRow, c, newRotation);
+        }).toList();
+    }
     private static final Pattern LABELLED_NAME = Pattern.compile("^Errors(\\d+)_Base(\\d+)_.*_RawBoard\\.txt$");
     private static final Path COMPLETED_LINKS_LOG = Path.of("logs", "java_port_completed_links.log");
 
@@ -170,11 +227,19 @@ public class BlackwoodSolver {
 
         List<BwPiece> cornerPieces = boardPieces.stream().filter(p -> p.pieceType() == 2).toList();
         List<BwPiece> sidePieces = boardPieces.stream().filter(p -> p.pieceType() == 1).toList();
+        List<HintPin> hintPins = activeHintPins();
+        Map<Integer, HintPin> pinByPiece = hintPins.stream()
+                .collect(java.util.stream.Collectors.toMap(HintPin::pieceNumber, h -> h));
+        HintPin startPin = pinByPiece.get(139);
+        HintPin pin181 = pinByPiece.get(181);
+        HintPin pin249 = pinByPiece.get(249);
+        HintPin pin208 = pinByPiece.get(208);
+        HintPin pin255 = pinByPiece.get(255);
         // Center (139) is excluded from the general pool unconditionally, matching main/master's
         // pre-existing behaviour. The other 4 are only pulled out when the switch is on --
         // otherwise they must stay available to the general search like any other middle piece.
         Set<Integer> hintPieceNumbers = NON_CENTER_HINTS_ENABLED
-                ? HINT_PINS.stream().map(HintPin::pieceNumber).collect(java.util.stream.Collectors.toSet())
+                ? pinByPiece.keySet()
                 : Set.of(139);
         List<BwPiece> middlePieces = boardPieces.stream().filter(p -> p.pieceType() == 0 && !hintPieceNumbers.contains(p.pieceNumber())).toList();
         java.util.function.Function<Integer, BwPiece> hintPiece = num ->
@@ -204,18 +269,19 @@ public class BlackwoodSolver {
         middlesNoBreak = buildTable(middlePieces, false, null, rand);
         southStart = buildTable(middlePieces, false, rp -> rp.topSide() == 6, rand);
         westStart = buildTable(middlePieces, false, rp -> rp.rightSide() == 11, rand);
-        start = buildTable(List.of(hintPiece.apply(139)), false, rp -> rp.rotations() == 2, rand);
+        start = buildTable(List.of(hintPiece.apply(139)), false, rp -> rp.rotations() == startPin.rotation(), rand);
         // All four non-center hints get allowBreaks=true (see BwUtil.HINT_BREAK_INDEXES) -- 208
         // and 255 first (2026-09-02), 181 and 249 added 2026-09-04 after 181 turned out to be the
         // ACTUAL fill-step-34 hint (208 is really at step 188, 255 at 247 -- see BwUtil's
         // corrected write-up), and a hard zero-tolerance pin sitting first in fill order is a much
         // better explanation for the population bottlenecking at 34 than anything about 208. Only
         // start (139, the mandatory center) stays a hard pin -- it predates the whole hint feature
-        // and has never shown this problem.
-        hint208 = buildTable(List.of(hintPiece.apply(208)), true, rp -> rp.rotations() == 2, rand);
-        hint255 = buildTable(List.of(hintPiece.apply(255)), true, rp -> rp.rotations() == 2, rand);
-        hint181 = buildTable(List.of(hintPiece.apply(181)), true, rp -> rp.rotations() == 2, rand);
-        hint249 = buildTable(List.of(hintPiece.apply(249)), true, rp -> rp.rotations() == 3, rand);
+        // and has never shown this problem. Required rotation now comes from activeHintPins() --
+        // identical to the literal "2"/"2"/"2"/"3" below when ROTATE_INSTANCE_DEGREES is 0.
+        hint208 = buildTable(List.of(hintPiece.apply(208)), true, rp -> rp.rotations() == pin208.rotation(), rand);
+        hint255 = buildTable(List.of(hintPiece.apply(255)), true, rp -> rp.rotations() == pin255.rotation(), rand);
+        hint181 = buildTable(List.of(hintPiece.apply(181)), true, rp -> rp.rotations() == pin181.rotation(), rand);
+        hint249 = buildTable(List.of(hintPiece.apply(249)), true, rp -> rp.rotations() == pin249.rotation(), rand);
 
         if (corners[0] == null || corners[0].length == 0) {
             throw new IllegalStateException("corners[0] is empty -- no corner piece qualifies for LeftBottom=0; step-0 seeding would fail.");
@@ -240,15 +306,15 @@ public class BlackwoodSolver {
                 masterPieceLookup[row * 16 + col] = (i < firstBreakIndex) ? rightSidesWithoutBreaks : rightSidesWithBreaks;
             } else if (col == 0) {
                 masterPieceLookup[row * 16 + col] = leftSides;
-            } else if (row == 7 && col == 7) {
+            } else if (row == startPin.row() && col == startPin.col()) {
                 masterPieceLookup[row * 16 + col] = start;
-            } else if (NON_CENTER_HINTS_ENABLED && row == 2 && col == 2) {
+            } else if (NON_CENTER_HINTS_ENABLED && row == pin181.row() && col == pin181.col()) {
                 masterPieceLookup[row * 16 + col] = hint181;
-            } else if (NON_CENTER_HINTS_ENABLED && row == 2 && col == 13) {
+            } else if (NON_CENTER_HINTS_ENABLED && row == pin249.row() && col == pin249.col()) {
                 masterPieceLookup[row * 16 + col] = hint249;
-            } else if (NON_CENTER_HINTS_ENABLED && row == 13 && col == 2) {
+            } else if (NON_CENTER_HINTS_ENABLED && row == pin208.row() && col == pin208.col()) {
                 masterPieceLookup[row * 16 + col] = hint208;
-            } else if (NON_CENTER_HINTS_ENABLED && row == 13 && col == 13) {
+            } else if (NON_CENTER_HINTS_ENABLED && row == pin255.row() && col == pin255.col()) {
                 masterPieceLookup[row * 16 + col] = hint255;
             } else if (row == 7 && col == 6) {
                 masterPieceLookup[row * 16 + col] = westStart;
