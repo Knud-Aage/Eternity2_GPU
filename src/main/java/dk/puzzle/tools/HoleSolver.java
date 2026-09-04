@@ -743,27 +743,82 @@ public class HoleSolver {
      * bucas-verified board by 90/180/270 preserves findConflicts()'s count exactly at every step.
      */
     static int[] rotateBoardCw(int[] board, int cwDegrees) {
-        if (cwDegrees % 90 != 0) {
-            throw new IllegalArgumentException("cwDegrees must be a multiple of 90, got: " + cwDegrees);
-        }
-        int turns = ((cwDegrees / 90) % 4 + 4) % 4;
+        int turns = turnsOf(cwDegrees);
         int[] result = new int[256];
         Arrays.fill(result, -1);
         for (int row = 0; row < H; row++) {
             for (int col = 0; col < W; col++) {
                 int piece = board[row * W + col];
                 if (piece == -1) continue;
-                int r = row, c = col;
+                int[] to = rotateCellCw(row, col, turns);
+                int rotatedPiece = piece;
                 for (int t = 0; t < turns; t++) {
-                    int nr = c, nc = H - 1 - r;
-                    r = nr;
-                    c = nc;
-                    piece = PieceUtils.rotate(piece);
+                    rotatedPiece = PieceUtils.rotate(rotatedPiece);
                 }
-                result[r * W + c] = piece;
+                result[to[0] * W + to[1]] = rotatedPiece;
             }
         }
         return result;
+    }
+
+    private static int turnsOf(int cwDegrees) {
+        if (cwDegrees % 90 != 0) {
+            throw new IllegalArgumentException("cwDegrees must be a multiple of 90, got: " + cwDegrees);
+        }
+        return ((cwDegrees / 90) % 4 + 4) % 4;
+    }
+
+    /** Where (row,col) lands after `turns` 90-degree-CW grid quarter-turns, top-down convention. */
+    private static int[] rotateCellCw(int row, int col, int turns) {
+        int r = row, c = col;
+        for (int t = 0; t < turns; t++) {
+            int nr = c, nc = H - 1 - r;
+            r = nr;
+            c = nc;
+        }
+        return new int[]{r, c};
+    }
+
+    /**
+     * Un-rotates a board found by BlackwoodSolver's ROTATE_INSTANCE_DEGREES-rotated hint search
+     * back to true coordinates, so the existing (rotation-unaware) CLUE_PINS/applyCluePins logic
+     * recognizes and protects all 5 official clues during the caller's subsequent repair pass,
+     * and so the exported/scored board is directly comparable to the real puzzle. Zero-cost for
+     * 251 of the 256 pieces: a whole-board rotation preserves every adjacency (and therefore the
+     * conflict count) exactly -- verified both by proof (rotation is a grid automorphism) and by
+     * measurement on a real live-run board (21 conflicts before and after).
+     * <p>
+     * The center (139) needs a separate, explicit fix: BlackwoodSolver deliberately excludes it
+     * from the search-time rotation (a 16-wide grid has no fixed point under a quarter turn, and
+     * rotating it would break westStart/southStart's hardcoded adjacency to the center cell --
+     * see BlackwoodSolver.activeHintPins()). Since 139 was never moved going in, the uniform
+     * whole-board rotate-back above still drags it away from its cell along with everything else.
+     * <p>
+     * Rather than force it back with a raw 2-cell swap (measured: costs ~8 conflicts that the
+     * caller's repair pass then can't reduce, since a value-swap doesn't hand repair an actual
+     * hole to re-solve), this BLANKS both the center cell and wherever 139 landed. That leaves
+     * exactly two physical pieces unplaced -- 139 and whatever displaced it -- for the caller's
+     * existing, already-tested applyCluePins()+region-repair pipeline to place properly:
+     * applyCluePins forces 139 back into its official cell since 139 isn't placed anywhere else,
+     * and ordinary hole-filling has no candidate left for the other cell but the displaced piece,
+     * now free to pick whichever rotation best matches its new neighbours instead of whatever the
+     * rigid whole-board rotation gave it.
+     */
+    public static int[] unRotateForExport(int[] board, int rotateInstanceDegrees) {
+        if (rotateInstanceDegrees == 0) return board;
+
+        int backDegrees = (360 - rotateInstanceDegrees) % 360;
+        int[] rotated = rotateBoardCw(board, backDegrees);
+
+        int centerRow = 8, centerCol = 7; // CLUE_PINS: piece 139 at cell 135 = 8*16+7, rotation 270
+        int centerCell = centerRow * 16 + centerCol;
+        int[] whereIs139Now = rotateCellCw(centerRow, centerCol, turnsOf(backDegrees));
+        int whereIs139NowCell = whereIs139Now[0] * 16 + whereIs139Now[1];
+
+        rotated[centerCell] = -1;
+        rotated[whereIs139NowCell] = -1;
+
+        return rotated;
     }
 
     private static List<List<Integer>> connectedComponents(boolean[] inHole) {

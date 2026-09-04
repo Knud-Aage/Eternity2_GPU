@@ -615,6 +615,13 @@ public class BlackwoodGpuRunner {
             // and this link use) into HoleSolver's own packed representation -- required before any
             // of HoleSolver's board logic (PieceUtils.getNorth/East/South/West etc.) is meaningful.
             int[] decoded = HoleSolver.decodeBoardAuto(link, inventory, false);
+            if (BlackwoodSolver.ROTATE_INSTANCE_DEGREES != 0) {
+                // Un-rotate before repair, not after: this way applyCluePins()/CLUE_PINS -- which
+                // only know the true official clue positions -- see all 5 clues at their real
+                // cells and can protect them during the repair pass below, instead of needing to
+                // be made rotation-aware themselves. See HoleSolver.unRotateForExport() javadoc.
+                decoded = HoleSolver.unRotateForExport(decoded, BlackwoodSolver.ROTATE_INSTANCE_DEGREES);
+            }
             HoleSolver.ConflictSolveResult result = HoleSolver.solveConflicts(decoded, inventory, false, SCORING_TRIALS);
             int[] completed = result.bestBoard();
             int conflicts = countConflicts(completed);

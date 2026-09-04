@@ -474,6 +474,9 @@ public class BlackwoodSolver {
             String link = boardString.substring(boardString.lastIndexOf("https://"));
 
             int[] decoded = HoleSolver.decodeBoardAuto(link, inventory, false);
+            if (ROTATE_INSTANCE_DEGREES != 0) {
+                decoded = HoleSolver.unRotateForExport(decoded, ROTATE_INSTANCE_DEGREES);
+            }
             HoleSolver.ConflictSolveResult result = HoleSolver.solveConflicts(decoded, inventory, false, SCORING_TRIALS);
             int[] completed = result.bestBoard();
             int conflicts = countConflicts(completed);
