@@ -32,21 +32,38 @@ public final class BwUtil {
     public static final int[] BREAK_INDEXES_ALLOWED = {201, 206, 211, 216, 221, 225, 229, 233, 237, 239};
     public static final int MAX_HEURISTIC_INDEX = 160;
 
-    // 2026-09-02 experiment (already deployed to the C# solver): 208 and 255 are pinned at
-    // fill-steps 34 and 45 respectively -- both well before the general break schedule opens at
-    // 201 -- with a single-candidate table each, so if the (west,south) colours the search happens
-    // to produce there don't exactly match what the pinned piece needs, that branch dead-ends with
-    // zero fallback. This grants each of those two hints exactly one break of budget, letting
-    // hint208/hint255's OWN candidate tables (built with allowBreaks=true, see
-    // BlackwoodSolver.prepare()) accept a one-side match instead of requiring both sides
-    // simultaneously.
+    // 2026-09-02 experiment (already deployed to the C# solver), extended to all four non-center
+    // hints 2026-09-04: grants each hint's candidate table (built with allowBreaks=true, see
+    // BlackwoodSolver.prepare()) exactly one break of budget, so if the (west,south) colours the
+    // search happens to produce at its cell don't exactly match what the pinned piece needs, the
+    // branch can fall back to a one-side match instead of dead-ending with zero fallback.
+    //
+    // CORRECTION 2026-09-04, then extension same day: the original {34, 45} was believed (wrongly
+    // -- see the corrected comment history) to be hint208/hint255's own fill-steps. Verified
+    // against the live masterPieceLookup that 34 and 45 are actually hint181's and hint249's own
+    // steps, while hint208 sits at 188 and hint255 at 247 -- and those two were hard,
+    // zero-tolerance pins the whole time this array existed, very likely the real cause of the
+    // population bottlenecking hard at step 34 (the first of the four in fill order, with no
+    // fallback at all). Rather than just fix the comment, extended the mechanism itself: hint181
+    // and hint249 now also get allowBreaks=true, with 188 and 247 added here so each of the four
+    // hints unlocks its OWN +1 of budget exactly at its own step.
+    //
+    // This isn't cosmetic -- getBreakArray() is cumulative and GLOBAL (see the breaksThisTurn
+    // check in BlackwoodSolver's search loop: breakArray[solveIndex] - cumulativeBreaks[solveIndex
+    // - 1]), so every break-tolerant hint draws from the SAME pool, in fill order. With only
+    // {34, 45} unlocked, giving hint181/hint249 break-tolerance too would let them exhaust that
+    // 2-slot pool before hint208 (188) and hint255 (247) ever get a turn, silently starving the
+    // two hints this mechanism was originally built for. Adding 188 and 247 as their own unlock
+    // points guarantees each hint has its own +1 available at its own step regardless of what any
+    // earlier hint spent -- worst case (all four need a break) still resolves, since the pool has
+    // grown to 4 by the time the last hint (255) is reached.
     //
     // Deliberately kept OUT of BREAK_INDEXES_ALLOWED: that array also drives firstBreakIndex(),
     // which every ordinary (non-hint) cell uses to decide middlesNoBreak vs middlesWithBreak.
-    // Folding 34/45 into it would have dropped that cutoff from 201 to 34, silently making ~150+
+    // Folding these in would have dropped that cutoff from 201 to 34, silently making ~150+
     // unrelated cells break-tolerant too. This array feeds ONLY getBreakArray()'s cumulative
     // budget, never firstBreakIndex().
-    public static final int[] HINT_BREAK_INDEXES = {34, 45};
+    public static final int[] HINT_BREAK_INDEXES = {34, 45, 188, 247};
 
     public static final int[] BLACKWOOD_TO_THESIL = {
             0, 1, 6, 22, 17, 3, 8, 10, 12, 4, 7, 9, 18, 5, 15, 11, 20, 2, 14, 16, 19, 13, 21

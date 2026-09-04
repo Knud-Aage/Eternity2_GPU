@@ -144,34 +144,40 @@ class BwUtilTest {
     void testFirstBreakIndexAndBreakArray() {
         // firstBreakIndex() must stay 201 regardless of HINT_BREAK_INDEXES -- it drives
         // middlesNoBreak/middlesWithBreak selection for every ordinary (non-hint) cell, and must
-        // not be dragged down to 34 by the two hint-specific early break points.
+        // not be dragged down to 34 by the hint-specific early break points.
         assertEquals(201, BwUtil.firstBreakIndex());
 
         int[] arr = BwUtil.getBreakArray();
-        // 2026-09-02: HINT_BREAK_INDEXES {34, 45} adds 2 to the cumulative budget before the
-        // general schedule even opens -- every value below used to be 0 pre-34, now it's 0 until
-        // 34, 1 from 34-44, 2 from 45 onward (added on top of everything the general schedule
-        // contributes from 201 on).
+        // 2026-09-04: HINT_BREAK_INDEXES {34, 45, 188, 247} now has one entry per non-center
+        // hint's own fill-step (34=hint181, 45=hint249, 188=hint208, 247=hint255 -- see the
+        // corrected write-up on HINT_BREAK_INDEXES for how this was verified), each adding 1 to
+        // the cumulative budget exactly when that hint is reached. Values below confirmed by
+        // actually running getBreakArray(), not hand-derived.
         assertEquals(0, arr[33]);
         assertEquals(1, arr[34]);
         assertEquals(1, arr[44]);
         assertEquals(2, arr[45]);
-        assertEquals(2, arr[200]);
-        assertEquals(3, arr[201]);
-        assertEquals(4, arr[206]);
-        assertEquals(5, arr[211]);
-        assertEquals(6, arr[216]);
-        assertEquals(7, arr[221]);
-        assertEquals(8, arr[225]);
-        assertEquals(9, arr[229]);
-        assertEquals(10, arr[233]);
-        assertEquals(11, arr[237]);
+        assertEquals(2, arr[187]);
+        assertEquals(3, arr[188]);
+        assertEquals(3, arr[200]);
+        assertEquals(4, arr[201]);
+        assertEquals(5, arr[206]);
+        assertEquals(6, arr[211]);
+        assertEquals(7, arr[216]);
+        assertEquals(8, arr[221]);
+        assertEquals(9, arr[225]);
+        assertEquals(10, arr[229]);
+        assertEquals(11, arr[233]);
+        assertEquals(12, arr[237]);
+        assertEquals(12, arr[238]);
         // Tracks BwUtil.BREAK_INDEXES_ALLOWED -- update whenever that schedule changes.
         // Blackwood's original 10-break schedule: the 10th break unlocks at 239 and the budget
-        // then tops out at 10 (now 12, +2 for the hint breaks). (239 was briefly dropped
-        // 2026-08-24, restored 2026-08-30 -- see the write-up on BREAK_INDEXES_ALLOWED.)
-        assertEquals(12, arr[239]);
-        assertEquals(12, arr[255]);
+        // then tops out at 10 (now 14, +4 for the hint breaks -- one per hint). (239 was briefly
+        // dropped 2026-08-24, restored 2026-08-30 -- see the write-up on BREAK_INDEXES_ALLOWED.)
+        assertEquals(13, arr[239]);
+        assertEquals(13, arr[246]);
+        assertEquals(14, arr[247]);
+        assertEquals(14, arr[255]);
     }
 
     @Test

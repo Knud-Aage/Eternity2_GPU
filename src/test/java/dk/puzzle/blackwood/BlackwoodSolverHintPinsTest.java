@@ -22,6 +22,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * off by default -- explicitly turned on here for the duration of this test class (and restored
  * after) since these tests are specifically about that feature. See
  * {@code BlackwoodSolverNoHintsTest} for coverage of the default (off) state.
+ *
+ * <p>2026-09-04: all four non-center hints are now break-tolerant, not just hint208/hint255 --
+ * see the corrected write-up on {@code BwUtil.HINT_BREAK_INDEXES} for why hint181/hint249 turned
+ * out to need this more, not less, than 208/255 did.
  */
 class BlackwoodSolverHintPinsTest {
 
@@ -60,10 +64,11 @@ class BlackwoodSolverHintPinsTest {
     }
 
     /**
-     * For hint208/hint255 (allowBreaks=true, 2026-09-02 experiment): every bucket must still hold
-     * only the pinned piece+rotation, in exactly one candidate each, but there should be MANY
-     * buckets now (one exact break-free match plus ~44 one-side-tolerant break variants) instead
-     * of just one -- otherwise the allowBreaks change silently did nothing.
+     * For all four non-center hints (allowBreaks=true, 2026-09-02 for 208/255, extended
+     * 2026-09-04 to 181/249): every bucket must still hold only the pinned piece+rotation, in
+     * exactly one candidate each, but there should be MANY buckets now (one exact break-free
+     * match plus ~44 one-side-tolerant break variants) instead of just one -- otherwise the
+     * allowBreaks change silently did nothing.
      */
     private static void assertBreakTolerantPin(BwRotatedPiece[][] table, int expectedPiece, int expectedRotation) {
         assertNotNull(table, "table must exist");
@@ -85,6 +90,8 @@ class BlackwoodSolverHintPinsTest {
 
     @Test
     void centerPinIsPiece139AtRotation2() {
+        // The mandatory center pin predates the whole hint feature and has never shown the
+        // near-universal-stall problem the other four did -- stays a hard pin.
         assertPin(solver.start, 139, 2);
     }
 
@@ -99,13 +106,16 @@ class BlackwoodSolverHintPinsTest {
     }
 
     @Test
-    void hint181PinIsCorrect() {
-        assertPin(solver.hint181, 181, 2);
+    void hint181PinIsBreakTolerant() {
+        // 2026-09-04: this is the hint actually reached at fill-step 34 (verified against the
+        // live masterPieceLookup) -- the earlier {34, 45} comment describing this as hint208's
+        // territory was wrong; see BwUtil.HINT_BREAK_INDEXES for the correction.
+        assertBreakTolerantPin(solver.hint181, 181, 2);
     }
 
     @Test
-    void hint249PinIsCorrect() {
-        assertPin(solver.hint249, 249, 3);
+    void hint249PinIsBreakTolerant() {
+        assertBreakTolerantPin(solver.hint249, 249, 3);
     }
 
     @Test
@@ -116,11 +126,20 @@ class BlackwoodSolverHintPinsTest {
 
     @Test
     void hintBreakBudgetStacksCorrectlyWithGeneralSchedule() {
+        // 2026-09-04: HINT_BREAK_INDEXES is now {34, 45, 188, 247} -- one entry per hint's own
+        // fill-step (181@34, 249@45, 208@188, 255@247), each contributing its own +1 so no
+        // earlier hint's break usage can starve a later one out of its own budget. See
+        // BwUtilTest for the fuller checkpoint list; this test just pins down the four unlock
+        // points themselves.
         int[] breakArray = BwUtil.getBreakArray();
-        assertEquals(1, breakArray[34], "hint208's break budget should unlock at step 34");
-        assertEquals(2, breakArray[45], "hint255's break budget should unlock at step 45");
-        assertEquals(2, breakArray[200], "budget must stay at 2 right up to the general schedule");
-        assertEquals(3, breakArray[201], "general schedule's first entry (201) should add on top");
+        assertEquals(1, breakArray[34], "hint181's own break budget should unlock at its own step, 34");
+        assertEquals(2, breakArray[45], "hint249's own break budget should unlock at its own step, 45");
+        assertEquals(2, breakArray[187], "budget must stay at 2 right up until hint208's own step");
+        assertEquals(3, breakArray[188], "hint208's own break budget should unlock at its own step, 188");
+        assertEquals(3, breakArray[200], "budget must stay at 3 right up to the general schedule");
+        assertEquals(4, breakArray[201], "general schedule's first entry (201) should add on top");
+        assertEquals(13, breakArray[246], "budget must stay at 13 right up until hint255's own step");
+        assertEquals(14, breakArray[247], "hint255's own break budget should unlock at its own step, 247");
     }
 
     @Test

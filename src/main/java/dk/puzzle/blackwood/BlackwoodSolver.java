@@ -205,14 +205,17 @@ public class BlackwoodSolver {
         southStart = buildTable(middlePieces, false, rp -> rp.topSide() == 6, rand);
         westStart = buildTable(middlePieces, false, rp -> rp.rightSide() == 11, rand);
         start = buildTable(List.of(hintPiece.apply(139)), false, rp -> rp.rotations() == 2, rand);
-        // 208 and 255 get allowBreaks=true (see BwUtil.HINT_BREAK_INDEXES) -- they're the two
-        // early, narrow-gate hints (fill-steps 34/45) that were plateauing hard. This lets either
-        // side of the pinned piece's required (west,south) mismatch instead of needing both
-        // simultaneously. 181/249/start are untouched -- they don't show this problem.
+        // All four non-center hints get allowBreaks=true (see BwUtil.HINT_BREAK_INDEXES) -- 208
+        // and 255 first (2026-09-02), 181 and 249 added 2026-09-04 after 181 turned out to be the
+        // ACTUAL fill-step-34 hint (208 is really at step 188, 255 at 247 -- see BwUtil's
+        // corrected write-up), and a hard zero-tolerance pin sitting first in fill order is a much
+        // better explanation for the population bottlenecking at 34 than anything about 208. Only
+        // start (139, the mandatory center) stays a hard pin -- it predates the whole hint feature
+        // and has never shown this problem.
         hint208 = buildTable(List.of(hintPiece.apply(208)), true, rp -> rp.rotations() == 2, rand);
         hint255 = buildTable(List.of(hintPiece.apply(255)), true, rp -> rp.rotations() == 2, rand);
-        hint181 = buildTable(List.of(hintPiece.apply(181)), false, rp -> rp.rotations() == 2, rand);
-        hint249 = buildTable(List.of(hintPiece.apply(249)), false, rp -> rp.rotations() == 3, rand);
+        hint181 = buildTable(List.of(hintPiece.apply(181)), true, rp -> rp.rotations() == 2, rand);
+        hint249 = buildTable(List.of(hintPiece.apply(249)), true, rp -> rp.rotations() == 3, rand);
 
         if (corners[0] == null || corners[0].length == 0) {
             throw new IllegalStateException("corners[0] is empty -- no corner piece qualifies for LeftBottom=0; step-0 seeding would fail.");
